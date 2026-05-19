@@ -1,0 +1,84 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.runQuery = runQuery;
+const db_1 = __importDefault(require("../config/db"));
+const sqlGuard_1 = require("../utils/sqlGuard");
+const queryCache = new Map();
+function buildCacheKey(sql, params) {
+    return `${sql}::${JSON.stringify(params)}`;
+}
+async function runQuery(sql, params = [], options = {}) {
+    const guard = (0, sqlGuard_1.validateSql)(sql);
+    if (!guard.safe || !guard.sanitizedSql) {
+        throw new Error(`Query blocked: ${guard.reason || 'unknown reason'}`);
+    }
+    const ttlSeconds = options.ttlSeconds ?? 0;
+    const staleWhileRevalidateSeconds = options.staleWhileRevalidateSeconds ?? 0;
+    const cacheKey = ttlSeconds > 0 ? options.cacheKey || buildCacheKey(guard.sanitizedSql, params) : null;
+    const cached = cacheKey ? queryCache.get(cacheKey) : null;
+    const now = Date.now();
+    if (cached) {
+        const ageSeconds = (now - cached.createdAt) / 1000;
+        if (ageSeconds <= ttlSeconds) {
+            return {
+                data: cached.data,
+                rowCount: cached.rowCount,
+                executionTimeMs: 0,
+                cacheStatus: 'hit',
+            };
+        }
+        if (ageSeconds <= ttlSeconds + staleWhileRevalidateSeconds) {
+            void runQuery(sql, params, { ...options, staleWhileRevalidateSeconds: 0 }).catch((error) => {
+                console.error('[SQL] Background cache refresh failed', error?.message || error);
+            });
+            return {
+                data: cached.data,
+                rowCount: cached.rowCount,
+                executionTimeMs: 0,
+                cacheStatus: 'stale',
+            };
+        }
+    }
+    const start = Date.now();
+    const connection = await db_1.default.getConnection();
+    try {
+        console.info('[SQL] Executing query:', guard.sanitizedSql);
+        await connection.query(`SET SESSION MAX_EXECUTION_TIME=${sqlGuard_1.QUERY_TIMEOUT_MS}`);
+        const [rows] = await connection.query(guard.sanitizedSql, params);
+        const data = rows;
+        const executionTimeMs = Date.now() - start;
+        console.info('[SQL] Query completed', {
+            rowCount: data.length,
+            executionTimeMs,
+        });
+        if (cacheKey) {
+            queryCache.set(cacheKey, {
+                data,
+                rowCount: data.length,
+                createdAt: Date.now(),
+            });
+        }
+        return {
+            data,
+            rowCount: data.length,
+            executionTimeMs,
+            cacheStatus: cacheKey ? 'miss' : undefined,
+        };
+    }
+    catch (error) {
+        console.error('[SQL] Query failed', {
+            sql: guard.sanitizedSql,
+            message: error?.message,
+            code: error?.code,
+            errno: error?.errno,
+            sqlState: error?.sqlState,
+        });
+        throw new Error(error?.message || 'Query execution failed');
+    }
+    finally {
+        connection.release();
+    }
+}
