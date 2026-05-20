@@ -42,7 +42,7 @@ interface Props {
   type: ChartType;
   data: unknown[];
   xAxis: string;
-  yAxis: string;
+  yAxis: string | string[];
   seriesKeys?: string[];
 }
 
@@ -104,6 +104,14 @@ function isLikelyDimensionKey(key: string) {
   );
 }
 
+function normalizeAxisList(axis: string | string[]): string[] {
+  if (Array.isArray(axis)) {
+    return axis.filter(Boolean);
+  }
+
+  return axis ? [axis] : [];
+}
+
 function buildSeriesDiagnostics(data: any[], keys: string[]): SeriesDiagnostic[] {
   return keys.map((key) => {
     let numericCount = 0;
@@ -135,26 +143,81 @@ function buildSeriesDiagnostics(data: any[], keys: string[]): SeriesDiagnostic[]
   });
 }
 
-function resolveSeriesKeys(data: any[], xAxis: string, yAxis: string, preferredSeriesKeys?: string[]) {
+function normalizeSeriesKeys(yAxis: string | string[], preferredSeriesKeys?: string[]) {
+  if (preferredSeriesKeys?.length) {
+    return preferredSeriesKeys.filter(Boolean);
+  }
+
+  return normalizeAxisList(yAxis);
+}
+
+function resolveTableReason(type: ChartType, dataLength: number, xAxis: string, hasNumericMetric: boolean): InferredChartDataset['tableReason'] {
+  if (type === 'table') {
+    return 'explicit_table';
+  }
+
+  if (dataLength === 0) {
+    return 'empty';
+  }
+
+  if (!xAxis) {
+    return 'missing_axis';
+  }
+
+  if (dataLength <= 1) {
+    return 'single_row';
+  }
+
+  if (!hasNumericMetric) {
+    return 'no_numeric_metric';
+  }
+
+  return undefined;
+}
+
+function estimateChartWidth(type: ChartType, rowCount: number, seriesCount: number) {
+  let multiplier = 36;
+
+  if (seriesCount > 1) {
+    multiplier = 58;
+  } else if (type === 'line') {
+    multiplier = 52;
+  }
+
+  const candidate = rowCount > 24 ? rowCount * multiplier : undefined;
+
+  if (!candidate) {
+    return '100%';
+  }
+
+  return Math.max(type === 'line' ? 1200 : 900, candidate);
+}
+
+function resolveSeriesKeys(data: any[], xAxis: string, yAxis: string | string[], preferredSeriesKeys?: string[]) {
   const allKeys = getRowKeys(data);
+  const preferredAxisKeys = normalizeAxisList(yAxis);
   const explicitKeys = (preferredSeriesKeys || []).filter((key) => allKeys.includes(key) && key !== xAxis);
   const candidateKeys = explicitKeys.length ? explicitKeys : allKeys.filter((key) => key !== xAxis && !isLikelyDimensionKey(key));
   const diagnostics = buildSeriesDiagnostics(data, candidateKeys);
   const validMetrics = diagnostics.filter((metric) => metric.numericCount > 0 && metric.coverage >= 0.5);
-  const preferredPrimary = validMetrics.find((metric) => metric.key === yAxis) || validMetrics[0] || diagnostics.find((metric) => metric.key === yAxis) || diagnostics[0];
+  const preferredPrimary = validMetrics.find((metric) => preferredAxisKeys.includes(metric.key))
+    || validMetrics[0]
+    || diagnostics.find((metric) => preferredAxisKeys.includes(metric.key))
+    || diagnostics[0];
   const orderedSeriesKeys = preferredPrimary
     ? [preferredPrimary.key, ...validMetrics.filter((metric) => metric.key !== preferredPrimary.key).map((metric) => metric.key)]
     : [];
 
   return {
     diagnostics,
-    seriesKeys: Array.from(new Set(orderedSeriesKeys.length ? orderedSeriesKeys : [yAxis].filter(Boolean))),
+    seriesKeys: Array.from(new Set(orderedSeriesKeys.length ? orderedSeriesKeys : preferredAxisKeys)),
   };
 }
 
-export function inferChartDataset(type: ChartType, data: any[], xAxis: string, yAxis: string, preferredSeriesKeys?: string[]): InferredChartDataset {
+export function inferChartDataset(type: ChartType, data: any[], xAxis: string, yAxis: string | string[], preferredSeriesKeys?: string[]): InferredChartDataset {
   const { diagnostics, seriesKeys } = resolveSeriesKeys(data, xAxis, yAxis, preferredSeriesKeys);
-  const orderedSeriesKeys = seriesKeys.length ? seriesKeys : [yAxis].filter(Boolean);
+  const fallbackSeriesKeys = normalizeSeriesKeys(yAxis, preferredSeriesKeys);
+  const orderedSeriesKeys = seriesKeys.length ? seriesKeys : fallbackSeriesKeys;
   const normalizedData = data.map((row) => {
     const nextRow = { ...row };
 
@@ -166,25 +229,12 @@ export function inferChartDataset(type: ChartType, data: any[], xAxis: string, y
 
     return nextRow;
   });
-  const chartWidthMultiplier = orderedSeriesKeys.length > 1 ? 58 : type === 'line' ? 52 : 36;
-  const chartWidthCandidate = data.length > 24 ? data.length * chartWidthMultiplier : undefined;
   const hasNumericMetric = orderedSeriesKeys.some((key) => diagnostics.some((metric) => metric.key === key && metric.numericCount > 0 && metric.coverage >= 0.5));
-  const tableReason =
-    type === 'table'
-      ? 'explicit_table'
-      : data.length === 0
-        ? 'empty'
-        : !xAxis
-          ? 'missing_axis'
-          : data.length <= 1
-            ? 'single_row'
-            : !hasNumericMetric
-              ? 'no_numeric_metric'
-              : undefined;
+  const tableReason = resolveTableReason(type, data.length, xAxis, hasNumericMetric);
   const tableOnly = Boolean(tableReason);
   const comparative = !tableOnly && orderedSeriesKeys.length > 1;
   const stacked = comparative && orderedSeriesKeys.length >= 4;
-  const chartWidth = chartWidthCandidate ? Math.max(type === 'line' ? 1200 : 900, chartWidthCandidate) : '100%';
+  const chartWidth = estimateChartWidth(type, data.length, orderedSeriesKeys.length);
 
   if (process.env.NODE_ENV === 'development') {
     const invalidSeries = diagnostics.filter((metric) => metric.numericCount === 0 || metric.coverage < 0.5).map((metric) => ({
@@ -213,7 +263,7 @@ export function inferChartDataset(type: ChartType, data: any[], xAxis: string, y
     tableReason,
     comparative,
     stacked,
-    seriesKeys: orderedSeriesKeys.length ? orderedSeriesKeys : [yAxis],
+    seriesKeys: orderedSeriesKeys.length ? orderedSeriesKeys : fallbackSeriesKeys,
     chartWidth,
     data: normalizedData,
   };
@@ -236,8 +286,14 @@ export default function ChartRenderer(props: Readonly<Props>) {
   }
 
   const chartDataset = inferChartDataset(type, data as any[], xAxis, yAxis, seriesKeys);
-  const primaryMetric = chartDataset.seriesKeys[0] || yAxis;
-  const chartProps = { data: chartDataset.data, xAxis, yAxis: primaryMetric, colors, seriesKeys: chartDataset.seriesKeys, stacked: chartDataset.stacked } as any;
+  const normalizedSeriesKeys: string[] = chartDataset.seriesKeys.length ? chartDataset.seriesKeys : normalizeAxisList(yAxis);
+  let primaryMetric = normalizedSeriesKeys[0] || '';
+
+  if (!primaryMetric) {
+    primaryMetric = Array.isArray(yAxis) ? yAxis[0] || '' : yAxis || '';
+  }
+
+  const chartProps = { data: chartDataset.data, xAxis, yAxis: primaryMetric, colors, seriesKeys: normalizedSeriesKeys, stacked: chartDataset.stacked } as any;
 
   if (chartDataset.tableOnly) {
     return <TableView {...chartProps} />;

@@ -3,101 +3,59 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.generateChartConfig = generateChartConfig;
+exports.validateSqlForOnlyFullGroupBy = validateSqlForOnlyFullGroupBy;
 exports.generateDashboardInsights = generateDashboardInsights;
 exports.generateSqlExplanation = generateSqlExplanation;
 const groq_1 = __importDefault(require("../config/groq"));
-const dataModel_1 = require("../utils/dataModel");
-const semanticMetrics_1 = require("../utils/semanticMetrics");
-const SYSTEM_PROMPT = `
-You are a read-only analytics assistant for an internal HR and recruitment platform.
-Your job is to convert natural language questions into MySQL SELECT queries and chart configurations.
-
-${(0, dataModel_1.getDataModel)()}
-
-${(0, semanticMetrics_1.getSemanticMetricPrompt)()}
-
-STRICT RULES:
-1. ONLY generate SELECT queries. Never INSERT, UPDATE, DELETE, DROP, or modify data.
-2. ONLY use the tables listed above. Never reference any other table.
-3. Always name columns explicitly — never use SELECT *.
-4. Always add sensible column aliases for readability.
-5. All dates are stored as UNIX timestamps. Always wrap them with FROM_UNIXTIME() before date formatting.
-6. For date grouping, use DATE_FORMAT(FROM_UNIXTIME(createdon), '%Y-%m') or the equivalent timestamp column.
-7. Always filter tblcandidate and tbljob with deleted = 0.
-8. Always filter tbldeals with archived = 0.
-9. Never return PII: emailid, contactnumber, formatted_contact_number.
-10. Prefer denormalized columns on tblassignjobcandidate for display fields when possible.
-11. Use tblassignjobcandidate for candidate-job pipeline analytics and JOINs to tblcandidate and tbljob when needed.
-12. If multiple aggregated metrics are requested in one result, alias them clearly, keep one primary dimension column, and return the metrics as separate numeric columns.
-13. If the prompt asks for a single total count, sum, or metric, return chartType "table" and still provide xAxis/yAxis aliases such as "metric" and "value".
-14. If the user asks something unrelated to analytics or data, set isAnalyticsQuery to false.
-15. If the query is ambiguous, set clarificationNeeded with a specific question.
-16. For dashboard compatibility, when selecting fields that match report filters, use these aliases exactly where possible:
-    date/month fields: "date", "created_date", or "created_month"
-    owner fields: "owner" or "ownerid"
-    company fields: "company", "company_name", or "companyname"
-    stage fields: "stage", "deal_stage", or "candidate_stage"
-    job status fields: "job_status" or "status"
-
-OUTPUT FORMAT — respond ONLY with valid JSON, no markdown, no explanation:
-{
-  "sql": "SELECT ...",
-  "chartType": "bar" | "line" | "pie" | "table",
-  "title": "Human readable chart title",
-  "xAxis": "column name for x axis",
-  "yAxis": "column name for y axis",
-  "reasoning": "brief explanation of what the query does",
-  "isAnalyticsQuery": true,
-  "clarificationNeeded": null
+// Simple validator to detect alias usage in GROUP BY and basic aggregate/group mismatches.
+function validateSqlForOnlyFullGroupBy(sql) {
+    if (!sql || typeof sql !== 'string')
+        return null;
+    const branches = splitUnionAllBranches(sql);
+    for (const branch of branches) {
+        const branchError = validateSingleSelectBranch(branch);
+        if (branchError)
+            return branchError;
+    }
+    return null;
 }
-
-For non-analytics queries:
-{
-  "sql": null,
-  "chartType": null,
-  "title": null,
-  "xAxis": null,
-  "yAxis": null,
-  "reasoning": null,
-  "isAnalyticsQuery": false,
-  "clarificationNeeded": null
+function splitUnionAllBranches(sql) {
+    const branches = [];
+    const parts = sql.split(/\bUNION\s+ALL\b/i);
+    for (const part of parts) {
+        const trimmed = part.trim().replace(/^\(+/, '').replace(/\)+$/, '');
+        if (trimmed)
+            branches.push(trimmed);
+    }
+    return branches.length > 0 ? branches : [sql];
 }
-`.trim();
-async function generateChartConfig(userPrompt, context) {
-    console.info('[LLM] Generating chart config for prompt:', userPrompt);
-    const contextualPrompt = context?.previousSql
-        ? [
-            'The user may be asking a follow-up analytics question.',
-            `Previous chart title: ${context.previousTitle || 'unknown'}`,
-            `Previous prompt: ${context.previousPrompt || 'unknown'}`,
-            `Previous chart type: ${context.previousChartType || 'unknown'}`,
-            `Previous SQL: ${context.previousSql}`,
-            `New user request: ${userPrompt}`,
-            'If this is a refinement, preserve useful intent from the previous SQL while producing a fresh safe SELECT query.',
-        ].join('\n')
-        : userPrompt;
-    const completion = await groq_1.default.chat.completions.create({
-        model: 'llama-3.3-70b-versatile',
-        messages: [
-            { role: 'system', content: SYSTEM_PROMPT },
-            { role: 'user', content: contextualPrompt },
-        ],
-        temperature: 0.1,
-        max_tokens: 1000,
-        response_format: { type: 'json_object' },
-    });
-    const raw = completion.choices[0]?.message?.content;
-    if (!raw) {
-        throw new Error('LLM returned empty response');
+function validateSingleSelectBranch(sql) {
+    const hasAggregate = /\b(COUNT|SUM|AVG|MIN|MAX)\s*\(/i.test(sql);
+    const selectClause = extractSelectClause(sql);
+    const groupBy = extractGroupByClause(sql);
+    const aliases = findAliases(selectClause);
+    if (hasAggregate && !groupBy.trim()) {
+        const selectPieces = selectClause
+            .replace(/\b(COUNT|SUM|AVG|MIN|MAX)\s*\([\s\S]*?\)/gi, '')
+            .split(',')
+            .map((piece) => piece.trim())
+            .filter(Boolean);
+        if (selectPieces.length > 1) {
+            return 'Aggregates present but no GROUP BY — non-aggregated fields detected.';
+        }
     }
-    console.info('[LLM] Raw response received');
-    try {
-        return JSON.parse(raw);
+    if (groupBy && /\b(COUNT|SUM|AVG|MIN|MAX)\s*\(/i.test(groupBy)) {
+        return 'GROUP BY clause cannot contain aggregate functions (COUNT, SUM, AVG, MIN, MAX). Remove the aggregate expression from the GROUP BY clause.';
     }
-    catch {
-        throw new Error('LLM returned invalid JSON');
+    if (aliases.length && groupBy) {
+        for (const alias of aliases) {
+            const re = new RegExp(String.raw `\b${alias}\b`, 'i');
+            if (re.test(groupBy)) {
+                return `GROUP BY references SELECT alias '${alias}'. Use the full expression instead: repeat the source expression from SELECT.`;
+            }
+        }
     }
+    return null;
 }
 async function generateDashboardInsights(reportTitle, charts) {
     const completion = await groq_1.default.chat.completions.create({
@@ -145,4 +103,23 @@ async function generateSqlExplanation(sql, chartTitle) {
         max_tokens: 200,
     });
     return completion.choices[0]?.message?.content || 'No explanation available.';
+}
+// Helper utilities for SQL validation
+function extractSelectClause(s) {
+    const m = /select([\s\S]*?)from/i.exec(s);
+    return m ? m[1] : '';
+}
+function extractGroupByClause(s) {
+    const m = /group\s+by\s+([\s\S]*?)(order\s+by|limit|$)/i.exec(s);
+    return m ? m[1] : '';
+}
+function findAliases(selectClause) {
+    const re = /\bAS\s+((?!\d)\w+)/gi;
+    const out = [];
+    let am;
+    while ((am = re.exec(selectClause)) !== null) {
+        if (am[1])
+            out.push(am[1]);
+    }
+    return out;
 }

@@ -33,29 +33,12 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.DEFAULT_REPORT_FILTERS = void 0;
 const mongoose_1 = __importStar(require("mongoose"));
-exports.DEFAULT_REPORT_FILTERS = [
-    { id: 'date-range', label: 'Date range', field: 'date', type: 'dateRange', operator: 'between', value: null, enabled: false },
-    { id: 'owner', label: 'Owner', field: 'owner', type: 'text', operator: 'contains', value: '', enabled: false },
-    { id: 'company', label: 'Company', field: 'company', type: 'text', operator: 'contains', value: '', enabled: false },
-    { id: 'stage', label: 'Stage', field: 'stage', type: 'text', operator: 'contains', value: '', enabled: false },
-    { id: 'job-status', label: 'Job status', field: 'job_status', type: 'text', operator: 'contains', value: '', enabled: false },
-];
 const LayoutSchema = new mongoose_1.Schema({
     x: { type: Number, default: 0 },
     y: { type: Number, default: 0 },
     w: { type: Number, default: 6 },
     h: { type: Number, default: 4 },
-}, { _id: false });
-const FilterSchema = new mongoose_1.Schema({
-    id: { type: String, required: true },
-    label: { type: String, required: true },
-    field: { type: String, required: true },
-    type: { type: String, enum: ['dateRange', 'select', 'text'], required: true },
-    operator: { type: String, enum: ['equals', 'contains', 'between', 'gte', 'lte'], required: true },
-    value: { type: mongoose_1.Schema.Types.Mixed, default: null },
-    enabled: { type: Boolean, default: false },
 }, { _id: false });
 const ReportSchema = new mongoose_1.Schema({
     title: { type: String, required: true, trim: true },
@@ -67,14 +50,12 @@ const ReportSchema = new mongoose_1.Schema({
             addedAt: { type: Date, default: Date.now },
         }],
     layout: { type: mongoose_1.Schema.Types.Mixed, default: {} },
-    filters: { type: [FilterSchema], default: () => exports.DEFAULT_REPORT_FILTERS },
     visibility: { type: String, enum: ['private', 'internal', 'public'], default: 'private' },
     share: {
         enabled: { type: Boolean, default: false },
         token: { type: String, index: true },
         createdAt: { type: Date },
         expiresAt: { type: Date },
-        allowFilters: { type: Boolean, default: true },
     },
     aiSummary: {
         status: { type: String, enum: ['idle', 'generating', 'ready', 'error'], default: 'idle' },

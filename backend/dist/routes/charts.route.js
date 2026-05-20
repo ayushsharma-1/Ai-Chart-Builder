@@ -6,7 +6,6 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const node_crypto_1 = require("node:crypto");
 const chart_service_1 = require("../services/chart.service");
-const filter_service_1 = require("../services/filter.service");
 const llm_service_1 = require("../services/llm.service");
 const Chart_1 = __importDefault(require("../models/Chart"));
 const sql_service_1 = require("../services/sql.service");
@@ -109,37 +108,13 @@ router.post('/:id/explain', async (req, res) => {
         return res.status(500).json({ success: false, message: 'Unable to generate explanation.' });
     }
 });
-router.post('/:id/run', async (req, res) => {
-    try {
-        const chart = await Chart_1.default.findById(req.params.id);
-        if (!chart) {
-            return res.status(404).json({ success: false, message: 'Chart not found.' });
-        }
-        const filters = Array.isArray(req.body?.filters) ? req.body.filters : [];
-        const filtered = filters.length > 0 ? (0, filter_service_1.applyDashboardFilters)(chart.sql, filters) : { sql: chart.sql, params: [] };
-        const result = await (0, sql_service_1.runQuery)(filtered.sql, filtered.params, { ttlSeconds: 0 });
-        return res.json({
-            success: true,
-            data: result.data,
-            rowCount: result.rowCount,
-            executionTimeMs: result.executionTimeMs,
-            cacheStatus: result.cacheStatus,
-        });
-    }
-    catch (err) {
-        console.error('Chart run error:', err?.message || err);
-        return res.status(500).json({ success: false, message: 'Query execution failed.' });
-    }
-});
 router.post('/:id/refresh', async (req, res) => {
     try {
         const chart = await Chart_1.default.findById(req.params.id);
         if (!chart) {
             return res.status(404).json({ success: false, message: 'Chart not found.' });
         }
-        const filters = Array.isArray(req.body?.filters) ? req.body.filters : [];
-        const filtered = filters.length > 0 ? (0, filter_service_1.applyDashboardFilters)(chart.sql, filters) : { sql: chart.sql, params: [] };
-        const result = await (0, sql_service_1.runQuery)(filtered.sql, filtered.params, { ttlSeconds: 0 });
+        const result = await (0, sql_service_1.runQuery)(chart.sql, [], { ttlSeconds: 0 });
         chart.dataSnapshot = result.data;
         chart.executionMetadata = {
             rowCount: result.rowCount,

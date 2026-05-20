@@ -27,6 +27,8 @@ export function useCharts() {
       queryConfidence: result.queryConfidence,
       metricLineage: result.metricLineage,
       chartType: overrideType || result.chartType,
+      chartOverrideReason: result.chartOverrideReason || '',
+      chartConfidence: result.chartConfidence,
       chartConfig: result.chartConfig,
       dataSnapshot: result.data,
       executionMetadata: result.executionMetadata || {

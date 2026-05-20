@@ -1,37 +1,4 @@
 "use strict";
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -53,8 +20,7 @@ exports.refreshReportCharts = refreshReportCharts;
 exports.generateReportSummary = generateReportSummary;
 const node_crypto_1 = require("node:crypto");
 const Chart_1 = __importDefault(require("../models/Chart"));
-const Report_1 = __importStar(require("../models/Report"));
-const filter_service_1 = require("./filter.service");
+const Report_1 = __importDefault(require("../models/Report"));
 const chart_service_1 = require("./chart.service");
 const llm_service_1 = require("./llm.service");
 const sql_service_1 = require("./sql.service");
@@ -95,9 +61,6 @@ async function hydrateReport(report) {
             .filter(Boolean),
     };
 }
-function normalizeFilters(filters) {
-    return Array.isArray(filters) && filters.length > 0 ? filters : Report_1.DEFAULT_REPORT_FILTERS;
-}
 function getNextReportLayout(report, preferredWidth = 6) {
     if (!report.charts.length) {
         return { x: 0, y: 0, w: preferredWidth, h: 4 };
@@ -123,7 +86,6 @@ async function createReport(payload) {
         description: payload.description || '',
         owner: payload.owner || 'analytics',
         charts: [],
-        filters: normalizeFilters(payload.filters),
         visibility: payload.visibility || 'private',
     });
     (payload.charts || []).forEach((chartRef) => {
@@ -160,7 +122,6 @@ async function getReport(id, options = {}) {
             mode: options.requireEdit ? 'edit' : 'view',
             source: options.shareToken ? 'share' : 'internal',
             canEdit: !options.shareToken && Boolean(options.requireEdit),
-            canFilter: !options.shareToken || report.share?.allowFilters !== false,
             canShare: !options.shareToken,
         },
     };
@@ -177,8 +138,6 @@ async function updateReport(id, payload, reason = 'report update') {
         report.description = payload.description;
     if (payload.owner !== undefined)
         report.owner = payload.owner;
-    if (payload.filters !== undefined)
-        report.filters = payload.filters;
     if (payload.visibility !== undefined)
         report.visibility = payload.visibility;
     if (payload.layout !== undefined)
@@ -205,7 +164,7 @@ async function duplicateReport(id) {
         _id: undefined,
         title: `${report.title} copy`,
         visibility: 'private',
-        share: { enabled: false, allowFilters: true },
+        share: { enabled: false },
         versions: [],
         createdAt: undefined,
         updatedAt: undefined,
@@ -271,7 +230,6 @@ async function enableReportShare(reportId, enabled = true) {
     }
     await appendVersion(report, enabled ? 'share enabled' : 'share disabled');
     report.share.enabled = enabled;
-    report.share.allowFilters = true;
     report.share.token = enabled ? report.share.token || (0, node_crypto_1.randomBytes)(24).toString('hex') : report.share.token;
     report.share.createdAt = enabled ? report.share.createdAt || new Date() : report.share.createdAt;
     report.visibility = enabled ? 'public' : 'private';
@@ -309,7 +267,6 @@ async function restoreReportVersion(reportId, version) {
     report.owner = snapshot.owner || report.owner;
     report.charts = snapshot.charts || report.charts;
     report.layout = snapshot.layout || {};
-    report.filters = snapshot.filters || Report_1.DEFAULT_REPORT_FILTERS;
     report.visibility = snapshot.visibility || 'private';
     report.share = snapshot.share || report.share;
     report.aiSummary = snapshot.aiSummary || report.aiSummary;
@@ -317,12 +274,11 @@ async function restoreReportVersion(reportId, version) {
     await report.save();
     return hydrateReport(report.toObject());
 }
-async function refreshReportCharts(reportId, filters, options = {}) {
+async function refreshReportCharts(reportId, options = {}) {
     const report = await Report_1.default.findById(reportId);
     if (!report) {
         return null;
     }
-    const reportFilters = filters || report.filters || [];
     const chartIds = report.charts.map((ref) => ref.chartId);
     const charts = await Chart_1.default.find({ _id: { $in: chartIds } });
     const results = [];
@@ -330,9 +286,7 @@ async function refreshReportCharts(reportId, filters, options = {}) {
     const persistSnapshots = options.persistSnapshots !== false;
     for (const chart of charts) {
         try {
-            const filtered = (0, filter_service_1.applyDashboardFilters)(chart.sql, reportFilters);
-            const result = await (0, sql_service_1.runQuery)(filtered.sql, filtered.params, {
-                cacheKey: `${String(chart._id)}:${(0, node_crypto_1.createHash)('sha1').update(JSON.stringify(reportFilters)).digest('hex')}`,
+            const result = await (0, sql_service_1.runQuery)(chart.sql, [], {
                 ttlSeconds: report.refreshPolicy?.staleAfterSeconds || 300,
                 staleWhileRevalidateSeconds: 60,
             });
@@ -357,10 +311,6 @@ async function refreshReportCharts(reportId, filters, options = {}) {
                 chartId: chart._id,
                 title: chart.title,
                 success: true,
-                appliedFilterCount: filtered.appliedFilterCount,
-                appliedFilters: filtered.appliedFilters,
-                skippedFilters: filtered.skippedFilters,
-                projectedAliases: filtered.projectedAliases,
             });
         }
         catch (error) {

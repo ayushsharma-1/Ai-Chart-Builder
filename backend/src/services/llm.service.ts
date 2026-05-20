@@ -1,75 +1,4 @@
 import groq from '../config/groq';
-import { buildLLMMessages, LLMRuntimeContext } from '../utils/llmPrompt';
-import { normalizeReservedAliases, validateSql } from '../utils/sqlGuard';
-
-export interface LLMChartResponse {
-  sql: string | null;
-  chartType: 'bar' | 'line' | 'pie' | 'table' | null;
-  title: string | null;
-  xAxis: string | null;
-  yAxis: string | null;
-  reasoning: string | null;
-  isAnalyticsQuery: boolean;
-  clarificationNeeded?: string | null;
-}
-
-type ChartGenerationContext = LLMRuntimeContext;
-
-export async function generateChartConfig(userPrompt: string, context?: ChartGenerationContext): Promise<LLMChartResponse> {
-  console.info('[LLM] Generating chart config for prompt:', userPrompt);
-  const { systemPrompt, userPrompt: runtimeUserPrompt } = buildLLMMessages(userPrompt, context);
-
-  const completion = await groq.chat.completions.create({
-    model: 'llama-3.3-70b-versatile',
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: runtimeUserPrompt },
-    ],
-    temperature: 0.1,
-    max_tokens: 1000,
-    response_format: { type: 'json_object' },
-  });
-
-  const raw = completion.choices[0]?.message?.content;
-
-  if (!raw) {
-    throw new Error('LLM returned empty response');
-  }
-
-  console.info('[LLM] Raw response received');
-
-  try {
-    const parsed = JSON.parse(raw) as LLMChartResponse;
-
-    // Basic pre-execution validation to avoid ONLY_FULL_GROUP_BY issues
-    if (parsed.sql) {
-      const normalization = normalizeReservedAliases(parsed.sql);
-      parsed.sql = normalization.sql;
-      parsed.xAxis = normalizeAxisLabel(parsed.xAxis, normalization.aliasMap);
-      parsed.yAxis = normalizeAxisLabel(parsed.yAxis, normalization.aliasMap);
-
-      const guard = validateSql(parsed.sql);
-      if (!guard.safe || !guard.sanitizedSql) {
-        throw new Error(`SQL validation failed: ${guard.reason || 'unknown reason'}`);
-      }
-
-      parsed.sql = guard.sanitizedSql;
-
-      const validationError = validateSqlForOnlyFullGroupBy(parsed.sql);
-      if (validationError) {
-        throw new Error(`SQL validation failed: ${validationError}`);
-      }
-    }
-
-    return parsed;
-  } catch (err) {
-    if (err instanceof Error) {
-      throw err;
-    }
-
-    throw new Error('LLM returned invalid JSON');
-  }
-}
 
 // Simple validator to detect alias usage in GROUP BY and basic aggregate/group mismatches.
 export function validateSqlForOnlyFullGroupBy(sql: string): string | null {
@@ -112,11 +41,15 @@ function validateSingleSelectBranch(sql: string): string | null {
     }
   }
 
+  if (groupBy && /\b(COUNT|SUM|AVG|MIN|MAX)\s*\(/i.test(groupBy)) {
+    return 'GROUP BY clause cannot contain aggregate functions (COUNT, SUM, AVG, MIN, MAX). Remove the aggregate expression from the GROUP BY clause.';
+  }
+
   if (aliases.length && groupBy) {
     for (const alias of aliases) {
-      const re = new RegExp(String.raw`\\b${alias}\\b`, 'i');
+      const re = new RegExp(String.raw`\b${alias}\b`, 'i');
       if (re.test(groupBy)) {
-        return `GROUP BY references SELECT alias '${alias}'. Repeat the full expression instead of using aliases.`;
+        return `GROUP BY references SELECT alias '${alias}'. Use the full expression instead: repeat the source expression from SELECT.`;
       }
     }
   }
@@ -215,13 +148,4 @@ function findAliases(selectClause: string): string[] {
     if (am[1]) out.push(am[1]);
   }
   return out;
-}
-
-function normalizeAxisLabel(label: string | null, aliasMap: Record<string, string>): string | null {
-  if (!label) {
-    return label;
-  }
-
-  const rewritten = aliasMap[label.toLowerCase()];
-  return rewritten || label;
 }

@@ -181,7 +181,7 @@ export default function ReportWorkspace({ reportId, mode }: Props) {
     if (readOnly || !selectedChart) return;
     const { data } = await api.post('/api/query', {
       prompt,
-      context: {
+      previousContext: {
         previousPrompt: selectedChart.prompt,
         previousTitle: selectedChart.title,
         previousSql: selectedChart.sql,

@@ -2,7 +2,7 @@ export type ChartType = 'bar' | 'line' | 'pie' | 'table';
 
 export interface ChartConfig {
   xAxis: string;
-  yAxis: string;
+  yAxis: string | string[];
   dataKey?: string;
   seriesKeys?: string[];
 }
@@ -21,6 +21,18 @@ export interface ChartResult {
   metricLineage?: ChartMetricLineage[];
   prompt?: string;
   executionMetadata?: ChartExecutionMetadata;
+  chartOverrideReason?: string;
+  chartConfidence?: 'high' | 'medium' | 'low';
+  pieDisabled?: boolean;
+  pieDisabledReason?: string;
+  fromCache?: boolean;
+  pipeline?: {
+    intentMs: number;
+    schemaMs: number;
+    sqlGenMs: number;
+    executionMs: number;
+    totalMs: number;
+  };
 }
 
 export interface Message {

@@ -17,6 +17,8 @@ export interface IChart extends Document {
     matchedBy: string[];
   }>;
   chartType: 'bar' | 'line' | 'pie' | 'table';
+  chartOverrideReason?: string;
+  chartConfidence?: 'high' | 'medium' | 'low';
   chartConfig: {
     xAxis: string;
     yAxis: string;
@@ -66,6 +68,8 @@ const ChartSchema = new Schema<IChart>(
       matchedBy: { type: [String], default: [] },
     }],
     chartType: { type: String, enum: ['bar', 'line', 'pie', 'table'], default: 'bar' },
+    chartOverrideReason: { type: String },
+    chartConfidence: { type: String, enum: ['high', 'medium', 'low'] },
     chartConfig: {
       xAxis: { type: String, default: '' },
       yAxis: { type: String, default: '' },

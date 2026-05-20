@@ -10,15 +10,6 @@ const LayoutSchema = zod_1.z.object({
     w: zod_1.z.number().int().min(1),
     h: zod_1.z.number().int().min(1),
 });
-const FilterSchema = zod_1.z.object({
-    id: zod_1.z.string(),
-    label: zod_1.z.string(),
-    field: zod_1.z.string(),
-    type: zod_1.z.enum(['dateRange', 'select', 'text']),
-    operator: zod_1.z.enum(['equals', 'contains', 'between', 'gte', 'lte']),
-    value: zod_1.z.any().optional(),
-    enabled: zod_1.z.boolean(),
-});
 const CreateReportSchema = zod_1.z.object({
     title: zod_1.z.string().trim().min(1).max(120),
     description: zod_1.z.string().max(500).optional(),
@@ -34,7 +25,6 @@ const UpdateReportSchema = zod_1.z.object({
     description: zod_1.z.string().max(500).optional(),
     owner: zod_1.z.string().max(120).optional(),
     visibility: zod_1.z.enum(['private', 'internal', 'public']).optional(),
-    filters: zod_1.z.array(FilterSchema).optional(),
     layout: zod_1.z.record(zod_1.z.unknown()).optional(),
     refreshPolicy: zod_1.z.object({
         mode: zod_1.z.enum(['manual', 'scheduled']),
@@ -201,10 +191,9 @@ router.post('/:id/share', async (req, res) => {
 router.post('/:id/refresh', async (req, res) => {
     try {
         const payload = zod_1.z.object({
-            filters: zod_1.z.array(FilterSchema).optional(),
             persistSnapshots: zod_1.z.boolean().optional(),
         }).parse(req.body);
-        const result = await (0, report_service_1.refreshReportCharts)(req.params.id, payload.filters, { persistSnapshots: payload.persistSnapshots });
+        const result = await (0, report_service_1.refreshReportCharts)(req.params.id, { persistSnapshots: payload.persistSnapshots });
         if (!result) {
             return res.status(404).json({ success: false, message: 'Report not found.' });
         }

@@ -51,6 +51,8 @@ const ChartSchema = new mongoose_1.Schema({
             matchedBy: { type: [String], default: [] },
         }],
     chartType: { type: String, enum: ['bar', 'line', 'pie', 'table'], default: 'bar' },
+    chartOverrideReason: { type: String },
+    chartConfidence: { type: String, enum: ['high', 'medium', 'low'] },
     chartConfig: {
         xAxis: { type: String, default: '' },
         yAxis: { type: String, default: '' },

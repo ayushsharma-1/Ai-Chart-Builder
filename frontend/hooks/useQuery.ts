@@ -219,7 +219,7 @@ export function useQuery() {
     try {
       const { data } = await api.post('/api/query', {
         prompt,
-        context: currentChart ? {
+        previousContext: currentChart ? {
           previousPrompt: currentChart.prompt,
           previousTitle: currentChart.title,
           previousSql: currentChart.sql,
@@ -242,11 +242,21 @@ export function useQuery() {
           metricLineage: data.metricLineage,
           prompt,
           executionMetadata: data.executionMetadata,
+          chartOverrideReason: data.chartOverrideReason,
+          chartConfidence: data.chartConfidence,
+          pieDisabled: data.pieDisabled,
+          pieDisabledReason: data.pieDisabledReason,
+          fromCache: data.fromCache,
+          pipeline: data.pipeline,
         };
+
+        const overrideNote = data.chartOverrideReason
+          ? ` _(Chart adjusted: ${data.chartOverrideReason})_`
+          : '';
 
         setSessions((previous) => previous.map((session) => (
           session.id === activeSessionId
-            ? replaceLoadingMessage(session, `Chart ready: ${data.title}. ${data.rowCount} rows in ${data.executionTimeMs}ms.`, result, 'done')
+            ? replaceLoadingMessage(session, `Chart ready: ${data.title}. ${data.rowCount} rows in ${data.executionTimeMs}ms.${overrideNote}`, result, 'done')
             : session
         )));
       } else {

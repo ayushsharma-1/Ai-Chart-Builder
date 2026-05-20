@@ -21,7 +21,7 @@ export default function InlineChartCard(props: Props) {
   const isSingleRowSummary = result.rowCount <= 1;
   const isDenseDataset = result.rowCount > 24;
   const chartDataset = inferChartDataset(result.chartType, result.data, result.chartConfig.xAxis, result.chartConfig.yAxis);
-  const isPieDisabled = chartDataset.comparative;
+  const isPieDisabled = Boolean(result.pieDisabled);
   const isTabularOnlyData = chartDataset.tableOnly;
   const isComparativeDataset = chartDataset.comparative;
   let preferredType: ChartType = result.chartType;
@@ -76,7 +76,12 @@ export default function InlineChartCard(props: Props) {
 
         <div className="flex flex-wrap items-center gap-2 sm:justify-end">
           {!isSingleRowSummary && !isTabularOnlyData && (
-            <ChartTypeSwitcher active={activeType} onChange={setActiveType} hiddenTypes={isPieDisabled ? ['pie'] : []} />
+            <ChartTypeSwitcher
+              active={activeType}
+              onChange={setActiveType}
+              disabledTypes={isPieDisabled ? ['pie'] : []}
+              disabledReasons={result.pieDisabledReason ? { pie: result.pieDisabledReason } : {}}
+            />
           )}
           <button
             type="button"

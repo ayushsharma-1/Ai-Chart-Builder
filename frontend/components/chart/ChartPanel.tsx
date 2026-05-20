@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 
 import { ChartResult, ChartType } from '@/types';
-import { Bookmark, Clock, Database } from 'lucide-react';
+import { Bookmark, Clock, Database, Info } from 'lucide-react';
 
 import EmptyState from '../ui/EmptyState';
 import ChartRenderer from './ChartRenderer';
@@ -21,7 +21,7 @@ export default function ChartPanel(props: Props) {
 
   useEffect(() => {
     if (chart?.chartType) {
-      setActiveType(chart.chartType);
+      setActiveType(chart.chartType === 'pie' && chart.pieDisabled ? 'bar' : chart.chartType);
     }
   }, [chart]);
 
@@ -58,7 +58,12 @@ export default function ChartPanel(props: Props) {
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <ChartTypeSwitcher active={activeType} onChange={setActiveType} />
+          <ChartTypeSwitcher
+            active={activeType}
+            onChange={setActiveType}
+            disabledTypes={chart.pieDisabled ? ['pie'] : []}
+            disabledReasons={chart.pieDisabledReason ? { pie: chart.pieDisabledReason } : {}}
+          />
           <button
             onClick={handleSave}
             className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
@@ -72,6 +77,15 @@ export default function ChartPanel(props: Props) {
           </button>
         </div>
       </div>
+
+      {chart.chartOverrideReason && (
+        <div className="px-6 pb-2 pt-2">
+          <div className="flex items-center gap-2 px-3 py-1.5 bg-[#6366F1]/[0.08] border border-[#6366F1]/20 rounded-full w-fit">
+            <Info size={11} className="text-[#6366F1] flex-shrink-0" />
+            <span className="text-[#6366F1] text-xs">{chart.chartOverrideReason}</span>
+          </div>
+        </div>
+      )}
 
       <div className="flex-1 p-6 animate-fade-slide">
         <ChartRenderer

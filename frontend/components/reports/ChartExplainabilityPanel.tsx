@@ -243,6 +243,39 @@ export default function ChartExplainabilityPanel({
             <div>Y axis: <span className="text-[#D7D7EA]">{chart.chartConfig.yAxis || 'none'}</span></div>
           </div>
         </section>
+
+        {(chart as any).chartOverrideReason && (
+          <section className="mt-5">
+            <h3 className="mb-2 flex items-center gap-2 text-sm font-semibold text-[#F0F0FF]">
+              <Info size={14} className="text-[#F59E0B]" />
+              Chart engine override
+            </h3>
+            <div className="rounded-lg border border-[#F59E0B]/20 bg-[#F59E0B]/[0.06] p-3">
+              <p className="text-xs leading-relaxed text-[#F59E0B]">{(chart as any).chartOverrideReason}</p>
+            </div>
+            {(chart as any).chartConfidence && (() => {
+              const conf = (chart as any).chartConfidence as 'high' | 'medium' | 'low';
+              let confidenceClass = 'border-[#F87171]/20 bg-[#F87171]/10 text-[#F87171]';
+              let confidenceSymbol = '○';
+
+              if (conf === 'high') {
+                confidenceClass = 'border-[#22D3A3]/20 bg-[#22D3A3]/10 text-[#22D3A3]';
+                confidenceSymbol = '●';
+              } else if (conf === 'medium') {
+                confidenceClass = 'border-[#F59E0B]/20 bg-[#F59E0B]/10 text-[#F59E0B]';
+                confidenceSymbol = '◐';
+              }
+
+              return (
+                <div className="mt-2">
+                  <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium ${confidenceClass}`}>
+                    {confidenceSymbol}{' '}Chart confidence: {conf}
+                  </span>
+                </div>
+              );
+            })()}
+          </section>
+        )}
       </div>
 
       <div className="border-t border-[#1E1E2E] px-5 py-4">
@@ -253,7 +286,24 @@ export default function ChartExplainabilityPanel({
         ) : (
           <>
             <div className="mb-3">
-              <ChartTypeSwitcher active={chart.chartType} onChange={(type) => onTypeChange(chart._id, type)} />
+              {(() => {
+                const xAxis = chart.chartConfig?.xAxis;
+                const sliceCount = xAxis && Array.isArray(chart.dataSnapshot)
+                  ? new Set(chart.dataSnapshot.map((row: any) => String(row?.[xAxis] ?? ''))).size
+                  : 0;
+                const pieDisabled = sliceCount > 15;
+                const disabledTypes = pieDisabled ? ['pie'] as any[] : [];
+                const disabledReasons = pieDisabled ? { pie: `${sliceCount} categories — pie requires 15 or fewer` } : {};
+
+                return (
+                  <ChartTypeSwitcher
+                    active={chart.chartType}
+                    onChange={(type) => onTypeChange(chart._id, type)}
+                    disabledTypes={disabledTypes}
+                    disabledReasons={disabledReasons}
+                  />
+                );
+              })()}
             </div>
             <button
               type="button"

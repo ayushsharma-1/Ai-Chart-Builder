@@ -16,7 +16,7 @@ const reports_route_1 = __importDefault(require("./routes/reports.route"));
 const app = (0, express_1.default)();
 const PORT = Number.parseInt(process.env.PORT || '3001', 10);
 app.disable('x-powered-by');
-app.use((0, cors_1.default)({ origin: process.env.CORS_ORIGIN || 'http://localhost:3000' }));
+app.use((0, cors_1.default)({ origin: process.env.CORS_ORIGIN || 'http://localhost:3500' }));
 app.use(express_1.default.json({ limit: '1mb' }));
 app.use(requestLogger_1.requestLogger);
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));

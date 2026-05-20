@@ -1,166 +1,322 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.SCHEMA_COLUMN_MAP = exports.SCHEMA_TABLES = void 0;
+exports.getRelevantSchemaContext = getRelevantSchemaContext;
 exports.getDataModel = getDataModel;
-function getDataModel() {
-    return `
-You have access to the following MySQL tables for the recruitcrm_normlized database.
-
-CRITICAL RULES:
-- All date/time fields are UNIX timestamps stored as integers.
-- Always use FROM_UNIXTIME() before date formatting, for example:
-  DATE_FORMAT(FROM_UNIXTIME(createdon), '%Y-%m') AS month
-- Never use DATE_FORMAT() directly on integer timestamp columns.
-- Do not select PII fields: emailid, contactnumber, formatted_contact_number.
-- Keep results analytics-focused and avoid exposing raw personal contact data.
-
-TABLE: tblcandidate (69 rows)
-PURPOSE: Candidate profiles.
-COLUMNS OF INTEREST:
-  - id (int) [PRIMARY KEY]
-  - firstname (varchar(40))
-  - lastname (varchar(40))
-  - genderid (tinyint(1))
-  - qualificationid (int)
-  - specialization (varchar(200))
-  - locationid (smallint)
-  - workexpyr (tinyint(1))
-  - workexpmonth (tinyint(1))
-  - currentsalary (float(12,2))
-  - salaryexpectation (float(12,2))
-  - willingtorelocate (tinyint(1))
-  - lastorganisation (varchar(300))
-  - currentstatus (varchar(45))
-  - noticeperiod (int)
-  - city (varchar(50))
-  - state (varchar(60))
-  - country (varchar(60))
-  - locality (varchar(100))
-  - position (varchar(512))
-  - relevantexperience (int)
-  - skill (text)
-  - source (text)
-  - deleted (tinyint(1)) NOT NULL
-  - ownerid (int)
-  - accountid (int) NOT NULL
-  - createdon (int) [UNIX TIMESTAMP]
-  - updatedon (int) [UNIX TIMESTAMP]
-  - availablefrom (int) [UNIX TIMESTAMP]
-  - salarytype (varchar(30))
-  - isduplicate (tinyint(1))
-
-FILTER RULE: always include deleted = 0.
-
-TABLE: tblassignjobcandidate (61 rows)
-PURPOSE: Candidate-to-job assignments and pipeline analytics.
-COLUMNS OF INTEREST:
-  - id (int) [PRIMARY KEY]
-  - jobid (int) [FK → tbljob.id]
-  - candidateid (int) [FK → tblcandidate.id]
-  - candidatestatusid (int)
-  - billingdate (int) [UNIX TIMESTAMP]
-  - billingamount (varchar(15))
-  - total (varchar(15))
-  - ownerid (int)
-  - accountid (int) NOT NULL
-  - createdon (int) [UNIX TIMESTAMP]
-  - updatedon (int) [UNIX TIMESTAMP]
-  - joiningdate (int) [UNIX TIMESTAMP]
-  - stagedate (int) [UNIX TIMESTAMP]
-  - paymentstatusid (int)
-  - jobname (varchar(200)) denormalized
-  - candidatename (varchar(90)) denormalized
-  - companyname (varchar(60)) denormalized
-  - contactname (varchar(130)) denormalized
-  - clientfeedback (tinyint(1))
-  - client_id (int)
-
-FILTER RULE: no deleted/archived flags exist on this table.
-
-TABLE: tbldeals (17 rows)
-PURPOSE: CRM deals analytics.
-COLUMNS OF INTEREST:
-  - id (int) [PRIMARY KEY]
-  - name (varchar(300))
-  - dealstage (int)
-  - dealvalue (decimal(17,2))
-  - dealpercentagevalue (decimal(17,2))
-  - closedate (int) [UNIX TIMESTAMP]
-  - dealtype (int)
-  - relatedcompany (int)
-  - relatedcandidate (int)
-  - related_job (int)
-  - archived (tinyint(1)) NOT NULL
-  - ownerid (int)
-  - accountid (int) NOT NULL
-  - createdon (int) [UNIX TIMESTAMP]
-  - updatedon (int) [UNIX TIMESTAMP]
-  - sourceid (int)
-  - split_type (int)
-
-FILTER RULE: always include archived = 0.
-
-TABLE: tbljob (2,249 rows)
-PURPOSE: Job requisitions and openings.
-COLUMNS OF INTEREST:
-  - id (int) [PRIMARY KEY]
-  - name (varchar(300))
-  - description (text)
-  - qualificationid (int)
-  - specialization (varchar(300))
-  - minexperienceinyears (tinyint(1))
-  - maxexperienceinyears (tinyint(1))
-  - annualsalarymin (float(11,2))
-  - annualsalarymax (float(11,2))
-  - noofopenings (smallint)
-  - jobstatus (int)
-  - companyid (int)
-  - contactid (int)
-  - currencyid (int)
-  - slug (varchar(90))
-  - allowapply (tinyint(1))
-  - deleted (tinyint(1)) NOT NULL
-  - ownerid (int)
-  - accountid (int) NOT NULL
-  - createdon (int) [UNIX TIMESTAMP]
-  - updatedon (int) [UNIX TIMESTAMP]
-  - jobpostingdate (int) [UNIX TIMESTAMP]
-  - locality (varchar(100))
-  - city (varchar(50))
-  - state (varchar(50))
-  - country (varchar(50))
-  - jobpostingstatus (int)
-  - jobcode (varchar(10))
-  - showcompany (tinyint(1))
-  - showaccountname (tinyint)
-  - salarytype (varchar(30))
-  - job_type (varchar(20))
-  - job_category (varchar(100))
-  - job_skill (text)
-  - remote (tinyint(1))
-  - hiring_pipeline_id (int)
-
-FILTER RULE: always include deleted = 0.
-
-RELATIONSHIPS:
-  - tblassignjobcandidate.candidateid → tblcandidate.id
-  - tblassignjobcandidate.jobid → tbljob.id
-  - tbldeals.relatedcandidate may reference tblcandidate.id and should be left-joined carefully.
-  - tbldeals.related_job may reference tbljob.id and should be left-joined carefully.
-
-JOIN GUIDANCE:
-  - Use tblassignjobcandidate as the primary bridge between candidates and jobs.
-  - tblcandidate does NOT have a candidatename column; build display names with CONCAT(firstname, ' ', lastname) AS candidate_name when needed.
-  - tbljob uses name for the job title; select tbljob.name AS jobname if you want a job label in the result.
-  - tblassignjobcandidate also has a denormalized jobname column, but it should only be used when that table is the primary source.
-  - If you join tbldeals to candidates, prefer LEFT JOIN tblcandidate ON tbldeals.relatedcandidate = tblcandidate.id.
-  - If you need both candidate and job context for a deal, join tbldeals → tblcandidate → tblassignjobcandidate → tbljob, or join tbldeals → tblassignjobcandidate when the pipeline relation is the primary source.
-  - When grouping by display labels, always group by the exact selected expression or an alias that exists in the query.
-
-RECOMMENDED ANALYTICS PATTERNS:
-  - Candidates added per month: DATE_FORMAT(FROM_UNIXTIME(createdon), '%Y-%m')
-  - Jobs created per month: DATE_FORMAT(FROM_UNIXTIME(createdon), '%Y-%m')
-  - Pipeline stage breakdown: GROUP BY candidatestatusid
-  - Deal value by stage: GROUP BY dealstage
-  - Remote vs onsite jobs: CASE WHEN remote = 1 THEN 'Remote' ELSE 'On-site' END
-`.trim();
+exports.SCHEMA_TABLES = [
+    {
+        name: 'tblcandidate',
+        purpose: 'Candidate profiles and talent attributes.',
+        columns: [
+            'id',
+            'srno',
+            'firstname',
+            'lastname',
+            'emailid',
+            'currentstatus',
+            'genderid',
+            'contactnumber',
+            'qualificationid',
+            'specialization',
+            'locationid',
+            'workexpyr',
+            'workexpmonth',
+            'candidatedob',
+            'currentsalary',
+            'salaryexpectation',
+            'resume',
+            'resumefilename',
+            'willingtorelocate',
+            'lastorganisation',
+            'noticeperiod',
+            'currencyid',
+            'slug',
+            'authid',
+            'resumeupdatedon',
+            'resumeupdaterequestedon',
+            'requestresumelinkstatus',
+            'resumeaddedon',
+            'profilepic',
+            'profilefacebook',
+            'profilegithub',
+            'profiletwitter',
+            'profilelinkedin',
+            'deleted',
+            'ownerid',
+            'accountid',
+            'createdby',
+            'createdon',
+            'updatedby',
+            'updatedon',
+            'city',
+            'state',
+            'country',
+            'locality',
+            'lng',
+            'relevantexperience',
+            'position',
+            'canaccess',
+            'availablefrom',
+            'salarytype',
+            'source',
+            'sourceadded',
+            'languageskills',
+            'skill',
+            'isduplicate',
+            'address',
+            'lat',
+            'sourceid',
+            'migration_reserved1',
+            'migration_reserved2',
+            'email_opt_out',
+            'profilexing',
+            'unavailable',
+            'availability_updated_by',
+            'sovren_document_id',
+            'email_opt_out_source',
+            'formatted_contact_number',
+            'formatted_profilelinkedin',
+            'formatted_profile_linkedin',
+            'sms_opt_out',
+            'sms_consent',
+            'postal_code',
+            'location',
+            'merge_flag',
+        ],
+        keywords: ['candidate', 'candidates', 'talent', 'profile', 'resume', 'skill', 'experience', 'owner', 'source', 'status'],
+        filters: ['tblcandidate.deleted = 0'],
+    },
+    {
+        name: 'tblassignjobcandidate',
+        purpose: 'Bridge table for candidate-to-job assignments and funnel analytics.',
+        columns: [
+            'id',
+            'jobid',
+            'candidateid',
+            'candidatestatusid',
+            'billingdate',
+            'billingamount',
+            'tax',
+            'total',
+            'remark',
+            'updatedbytype',
+            'ownerid',
+            'accountid',
+            'createdby',
+            'createdon',
+            'updatedby',
+            'updatedon',
+            'share',
+            'joiningdate',
+            'stagedate',
+            'paymentstatusid',
+            'invoiceid',
+            'jobname',
+            'candidatename',
+            'companyname',
+            'contactname',
+            'jobslug',
+            'candidateslug',
+            'companyslug',
+            'contactslug',
+            'invoiceurl',
+            'clientfeedback',
+            'formatted_cv',
+            'coverletter',
+            'portfolio',
+            'other_file_1',
+            'other_file_2',
+            'client_id',
+        ],
+        keywords: ['assignment', 'assignments', 'pipeline', 'placement', 'funnel', 'billing', 'billingamount', 'total', 'stage', 'status', 'conversion'],
+        relations: ['tblassignjobcandidate.candidateid -> tblcandidate.id', 'tblassignjobcandidate.jobid -> tbljob.id'],
+    },
+    {
+        name: 'tbldeals',
+        purpose: 'CRM deal and revenue analytics.',
+        columns: [
+            'id',
+            'srno',
+            'name',
+            'dealstage',
+            'dealvalue',
+            'dealpercentagevalue',
+            'closedate',
+            'dealtype',
+            'slug',
+            'relatedcompany',
+            'relatedcandidate',
+            'related_job',
+            'archived',
+            'ownerid',
+            'accountid',
+            'createdby',
+            'createdon',
+            'updatedby',
+            'updatedon',
+            'sourceid',
+            'split_type',
+            'migration_reserved1',
+        ],
+        keywords: ['deal', 'deals', 'revenue', 'billing', 'amount', 'value', 'closed', 'close date', 'pipeline', 'owner', 'company', 'stage'],
+        filters: ['tbldeals.archived = 0'],
+        relations: ['tbldeals.relatedcandidate -> tblcandidate.id', 'tbldeals.related_job -> tbljob.id'],
+    },
+    {
+        name: 'tbljob',
+        purpose: 'Job requisitions, openings, and hiring demand.',
+        columns: [
+            'id',
+            'srno',
+            'name',
+            'description',
+            'qualificationid',
+            'specialization',
+            'minexperienceinyears',
+            'maxexperienceinyears',
+            'annualsalarymin',
+            'annualsalarymax',
+            'noofopenings',
+            'jobstatus',
+            'companyid',
+            'contactid',
+            'currencyid',
+            'slug',
+            'allowapply',
+            'jdtext',
+            'details',
+            'detailfilename',
+            'deleted',
+            'collaborator',
+            'authid',
+            'ownerid',
+            'accountid',
+            'createdby',
+            'createdon',
+            'updatedby',
+            'updatedon',
+            'jobpostingdate',
+            'city',
+            'lat',
+            'lng',
+            'address',
+            'state',
+            'country',
+            'jobpostingstatus',
+            'jobcode',
+            'showcompany',
+            'showaccountname',
+            'canaccess',
+            'salarytype',
+            'jobstatuscomment',
+            'jobquestions',
+            'sharecandidatefields',
+            'submitcandidateemailsenton',
+            'cvljobpostingid',
+            'sourceid',
+            'job_type',
+            'job_category',
+            'job_skill',
+            'remote',
+            'hiring_pipeline_id',
+            'migration_reserved1',
+            'migration_reserved2',
+            'mapped_pending_job_id',
+            'enable_vms_link',
+            'job_online_candidate_list_passcode',
+        ],
+        keywords: ['job', 'jobs', 'role', 'opening', 'openings', 'hiring', 'req', 'requisition', 'remote', 'company', 'specialization', 'department'],
+        filters: ['tbljob.deleted = 0'],
+    },
+];
+exports.SCHEMA_COLUMN_MAP = new Map(exports.SCHEMA_TABLES.map((table) => [table.name, new Set(table.columns.map((column) => column.toLowerCase()))]));
+const SCHEMA_CONTEXT_CACHE = new Map();
+const SCHEMA_HEADER = [
+    'SCHEMA CONTEXT:',
+    'Use only the tables and columns listed below.',
+    'All date/time fields are UNIX timestamps; use FROM_UNIXTIME() before date formatting or bucketing.',
+    'Avoid PII fields such as emailid, contactnumber, and formatted_contact_number.',
+    'Prefer compact analytical shapes instead of verbose table dumps.',
+].join('\n');
+function normalizeIntent(intent) {
+    return intent.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+function scoreTable(table, intent) {
+    const haystack = normalizeIntent([table.name, table.purpose, ...table.columns, ...table.keywords].join(' '));
+    const tokens = normalizeIntent(intent).split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) {
+        return 0;
+    }
+    let score = 0;
+    for (const token of tokens) {
+        if (token.length < 2) {
+            continue;
+        }
+        if (haystack.includes(token)) {
+            score += token.length >= 5 ? 3 : 2;
+        }
+    }
+    return score;
+}
+function selectRelevantTables(intent) {
+    const ranked = exports.SCHEMA_TABLES
+        .map((table) => ({ table, score: scoreTable(table, intent) }))
+        .sort((left, right) => right.score - left.score);
+    const selected = ranked.filter((entry) => entry.score > 0).map((entry) => entry.table);
+    if (selected.length === 0) {
+        return [exports.SCHEMA_TABLES[1]];
+    }
+    const selectedNames = new Set(selected.map((table) => table.name));
+    const intentText = normalizeIntent(intent);
+    if ((selectedNames.has('tblcandidate') && selectedNames.has('tbljob')) || /funnel|placement|conversion|assignment|pipeline/.test(intentText)) {
+        selectedNames.add('tblassignjobcandidate');
+    }
+    if ((selectedNames.has('tbldeals') && (selectedNames.has('tblcandidate') || selectedNames.has('tbljob'))) || /deal|revenue|billing|value|close/.test(intentText)) {
+        selectedNames.add('tblassignjobcandidate');
+    }
+    return exports.SCHEMA_TABLES.filter((table) => selectedNames.has(table.name));
+}
+function formatTableDefinition(table) {
+    return `${table.name}(${table.columns.join(', ')})`;
+}
+function formatSchemaTable(table) {
+    const details = [
+        `- ${formatTableDefinition(table)}`,
+        `  purpose: ${table.purpose}`,
+    ];
+    if (table.filters?.length) {
+        details.push(`  filters: ${table.filters.join('; ')}`);
+    }
+    if (table.relations?.length) {
+        details.push(`  relations: ${table.relations.join('; ')}`);
+    }
+    return details.join('\n');
+}
+function buildSchemaContext(intent) {
+    const cacheKey = normalizeIntent(intent);
+    const cached = SCHEMA_CONTEXT_CACHE.get(cacheKey);
+    if (cached) {
+        return cached;
+    }
+    const relevantTables = selectRelevantTables(intent);
+    const relationshipHints = relevantTables.flatMap((table) => table.relations || []);
+    const filters = relevantTables.flatMap((table) => table.filters || []);
+    const contextParts = [
+        SCHEMA_HEADER,
+        'Relevant tables:',
+        ...relevantTables.map((table) => formatSchemaTable(table)),
+        relationshipHints.length ? `RELATIONSHIPS: ${Array.from(new Set(relationshipHints)).join('; ')}` : '',
+        filters.length ? `DEFAULT FILTERS: ${Array.from(new Set(filters)).join('; ')}` : '',
+        'JOIN GUIDANCE: Use tblassignjobcandidate as the bridge for candidate/job funnel analytics. Use tbljob.name as the job label, and CONCAT(firstname, " ", lastname) when a candidate display name is needed.',
+        'ANALYTICAL HINTS: Group by compact business dimensions such as month, recruiter, owner, company, source, stage, status, or job.',
+    ].filter(Boolean);
+    const context = contextParts.join('\n');
+    SCHEMA_CONTEXT_CACHE.set(cacheKey, context);
+    return context;
+}
+function getRelevantSchemaContext(userIntent = '') {
+    return buildSchemaContext(userIntent);
+}
+function getDataModel(userIntent = '') {
+    return getRelevantSchemaContext(userIntent);
 }
