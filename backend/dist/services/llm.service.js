@@ -3,60 +3,13 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.validateSqlForOnlyFullGroupBy = validateSqlForOnlyFullGroupBy;
+exports.validateSqlForOnlyFullGroupBy = void 0;
 exports.generateDashboardInsights = generateDashboardInsights;
 exports.generateSqlExplanation = generateSqlExplanation;
 const groq_1 = __importDefault(require("../config/groq"));
 const aiMetricsLogger_1 = require("../utils/aiMetricsLogger");
-function validateSqlForOnlyFullGroupBy(sql) {
-    if (!sql || typeof sql !== 'string')
-        return null;
-    const branches = splitUnionAllBranches(sql);
-    for (const branch of branches) {
-        const branchError = validateSingleSelectBranch(branch);
-        if (branchError)
-            return branchError;
-    }
-    return null;
-}
-function splitUnionAllBranches(sql) {
-    const branches = [];
-    const parts = sql.split(/\bUNION\s+ALL\b/i);
-    for (const part of parts) {
-        const trimmed = part.trim().replace(/^\(+/, '').replace(/\)+$/, '');
-        if (trimmed)
-            branches.push(trimmed);
-    }
-    return branches.length > 0 ? branches : [sql];
-}
-function validateSingleSelectBranch(sql) {
-    const hasAggregate = /\b(COUNT|SUM|AVG|MIN|MAX)\s*\(/i.test(sql);
-    const selectClause = extractSelectClause(sql);
-    const groupBy = extractGroupByClause(sql);
-    const aliases = findAliases(selectClause);
-    if (hasAggregate && !groupBy.trim()) {
-        const selectPieces = selectClause
-            .replace(/\b(COUNT|SUM|AVG|MIN|MAX)\s*\([\s\S]*?\)/gi, '')
-            .split(',')
-            .map((piece) => piece.trim())
-            .filter(Boolean);
-        if (selectPieces.length > 1) {
-            return 'Aggregates present but no GROUP BY — non-aggregated fields detected.';
-        }
-    }
-    if (groupBy && /\b(COUNT|SUM|AVG|MIN|MAX)\s*\(/i.test(groupBy)) {
-        return 'GROUP BY clause cannot contain aggregate functions (COUNT, SUM, AVG, MIN, MAX). Remove the aggregate expression from the GROUP BY clause.';
-    }
-    if (aliases.length && groupBy) {
-        for (const alias of aliases) {
-            const re = new RegExp(String.raw `\b${alias}\b`, 'i');
-            if (re.test(groupBy)) {
-                return `GROUP BY references SELECT alias '${alias}'. Use the full expression instead: repeat the source expression from SELECT.`;
-            }
-        }
-    }
-    return null;
-}
+const sqlGuard_1 = require("../utils/sqlGuard");
+Object.defineProperty(exports, "validateSqlForOnlyFullGroupBy", { enumerable: true, get: function () { return sqlGuard_1.validateSqlForOnlyFullGroupBy; } });
 async function generateDashboardInsights(reportTitle, charts) {
     const start = Date.now();
     let usage;
@@ -149,21 +102,4 @@ async function generateSqlExplanation(sql, chartTitle) {
         });
     }
 }
-function extractSelectClause(s) {
-    const m = /select([\s\S]*?)from/i.exec(s);
-    return m ? m[1] : '';
-}
-function extractGroupByClause(s) {
-    const m = /group\s+by\s+([\s\S]*?)(order\s+by|limit|$)/i.exec(s);
-    return m ? m[1] : '';
-}
-function findAliases(selectClause) {
-    const re = /\bAS\s+((?!\d)\w+)/gi;
-    const out = [];
-    let am;
-    while ((am = re.exec(selectClause)) !== null) {
-        if (am[1])
-            out.push(am[1]);
-    }
-    return out;
-}
+// Group-by validation moved to `sqlGuard.validateSqlForOnlyFullGroupBy`

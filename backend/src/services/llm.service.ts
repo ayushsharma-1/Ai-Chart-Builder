@@ -23,7 +23,7 @@ export async function generateDashboardInsights(reportTitle: string, charts: Ins
 
   try {
     const completion = await groq.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
+      model: 'openai/gpt-oss-120b',
       messages: [
         {
           role: 'system',
@@ -64,7 +64,7 @@ export async function generateDashboardInsights(reportTitle: string, charts: Ins
   } finally {
     logAICall({
       callType: 'dashboard_insights',
-      model: 'llama-3.3-70b-versatile',
+      model: 'openai/gpt-oss-120b',
       success,
       errorMessage,
       latencyMs: Date.now() - start,
@@ -81,7 +81,7 @@ export async function generateSqlExplanation(sql: string, chartTitle: string): P
 
   try {
     const completion = await groq.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
+      model: 'openai/gpt-oss-120b',
       messages: [
         {
           role: 'system',
@@ -110,7 +110,7 @@ export async function generateSqlExplanation(sql: string, chartTitle: string): P
   } finally {
     logAICall({
       callType: 'sql_explanation',
-      model: 'llama-3.3-70b-versatile',
+      model: 'openai/gpt-oss-120b',
       userPrompt: `Chart title: "${chartTitle}"`,
       success,
       errorMessage,

@@ -25,6 +25,9 @@ const IntentAnalysisSchema = zod_1.z.object({
     needsClarification: zod_1.z.string().nullable(),
     chartHint: zod_1.z.enum(['bar', 'line', 'pie', 'table']).nullable(),
     intent: zod_1.z.string(),
+    confidence: zod_1.z.number().min(0).max(1),
+    confidenceReason: zod_1.z.string().nullable(),
+    clarificationQuestion: zod_1.z.string().nullable(),
 });
 // FROZEN — do not generate at runtime
 const FROZEN_INTENT_SYSTEM = (0, promptTokens_1.buildFrozenIntentPrefix)();
@@ -131,9 +134,82 @@ function isSupportedDynamicTimeRange(value) {
     }
     return false;
 }
+function buildClarificationQuestion(userPrompt) {
+    const normalized = userPrompt.toLowerCase();
+    const isJobQuery = /\b(job|jobs|hiring|hiring role|opening|openings|requisition|requisitions)\b/i.test(normalized);
+    if (isJobQuery) {
+        return 'Should I show active jobs by department, by recruiter, or just the total count?';
+    }
+    if (/compare|performance|trend|show me something|something interesting|chart/i.test(normalized)) {
+        return 'Which metric should I show - total, average, or trend?';
+    }
+    if (/time|month|week|year|recent|latest|last|right now|now|current|active|open/i.test(normalized)) {
+        return 'Which time range - last 30 days, 3 months, or 12 months?';
+    }
+    return 'What would you like to see - total, average, trend, or something else?';
+}
+function estimateConfidence(userPrompt) {
+    const normalized = userPrompt.toLowerCase();
+    const isJobQuery = /\b(job|jobs|hiring|hiring role|opening|openings|requisition|requisitions)\b/i.test(normalized);
+    const isCandidateQuery = /\b(candidate|candidates|applicant|applicants|talent)\b/i.test(normalized);
+    const isDealQuery = /\b(deal|deals|revenue|billing|deal value)\b/i.test(normalized);
+    const isAssignmentQuery = /\b(assignment|assignments|pipeline|placement|funnel)\b/i.test(normalized);
+    const hasEntity = isJobQuery || isCandidateQuery || isDealQuery || isAssignmentQuery;
+    const hasMetric = /\b(total|count|how many|average|avg|mean|trend|change|growth|variance|dropout|turnaround|cumulative|running total|active)\b/i.test(normalized);
+    const hasScope = /\b(right now|now|current|active|open|closed|last|today|yesterday|week|month|year|recent|latest|rolling|this month|this year|last 30 days|last 3 months|last 12 months)\b/i.test(normalized);
+    const vague = /\b(draw a chart|show me something|something interesting|compare performance|show trends|show performance)\b/i.test(normalized);
+    if (hasEntity && hasMetric && hasScope) {
+        return {
+            confidence: 0.95,
+            confidenceReason: null,
+            clarificationQuestion: null,
+        };
+    }
+    if (hasEntity && hasMetric && !hasScope) {
+        return {
+            confidence: 0.82,
+            confidenceReason: 'The request names a clear entity and metric, but the scope or time window is only implied.',
+            clarificationQuestion: null,
+        };
+    }
+    if (hasEntity && hasScope && !hasMetric) {
+        return {
+            confidence: 0.78,
+            confidenceReason: 'The request names a clear entity and scope, but the metric is implicit.',
+            clarificationQuestion: null,
+        };
+    }
+    if (vague) {
+        return {
+            confidence: 0.1,
+            confidenceReason: 'The request is vague and does not specify a metric, table, or time range.',
+            clarificationQuestion: buildClarificationQuestion(userPrompt),
+        };
+    }
+    if (!hasEntity && !hasMetric && !hasScope) {
+        return {
+            confidence: 0.2,
+            confidenceReason: 'The request does not clearly identify a metric or time window.',
+            clarificationQuestion: buildClarificationQuestion(userPrompt),
+        };
+    }
+    if (hasEntity && hasMetric) {
+        return {
+            confidence: 0.85,
+            confidenceReason: null,
+            clarificationQuestion: null,
+        };
+    }
+    return {
+        confidence: 0.6,
+        confidenceReason: 'The request has partial structure but still leaves ambiguity in the entity, metric, or scope.',
+        clarificationQuestion: buildClarificationQuestion(userPrompt),
+    };
+}
 /** Default fallback when intent analysis fails or times out */
 function buildIntentFallback(userPrompt) {
     const parsedTimeRange = parseTimeRange(userPrompt);
+    const confidence = estimateConfidence(userPrompt);
     return {
         tables: ['tblcandidate', 'tblassignjobcandidate', 'tbldeals', 'tbljob'],
         metricType: 'count',
@@ -144,6 +220,9 @@ function buildIntentFallback(userPrompt) {
         needsClarification: null,
         chartHint: null,
         intent: userPrompt,
+        confidence: confidence.confidence,
+        confidenceReason: confidence.confidenceReason,
+        clarificationQuestion: confidence.clarificationQuestion,
     };
 }
 async function analyzeIntent(userPrompt, previousContext, options) {
@@ -162,21 +241,21 @@ async function analyzeIntent(userPrompt, previousContext, options) {
         ...contextLines,
         'Identify which tables are needed and what the user wants to measure.',
     ].join('\n');
-    // 3-second timeout to prevent pipeline stalls if intent agent hangs
+    // 6-second timeout to prevent pipeline stalls if intent agent hangs
     try {
         const completion = await Promise.race([
             groq_1.default.chat.completions.create({
-                model: 'llama-3.3-70b-versatile',
+                model: 'llama-3.1-8b-instant',
                 messages: [
                     // FROZEN system prompt goes first — maximizes token cache hit rate
                     { role: 'system', content: [FROZEN_INTENT_SYSTEM, TABLE_HINTS].join('\n\n') },
                     { role: 'user', content: userMessage },
                 ],
                 temperature: 0.1,
-                max_tokens: 300, // intent analysis is small
+                max_tokens: 250,
                 response_format: { type: 'json_object' },
             }),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('Intent agent timeout (3s)')), 3000)),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Intent agent timeout (6s)')), 6000)),
         ]);
         usage = completion.usage;
         const raw = completion.choices[0]?.message?.content;

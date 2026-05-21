@@ -10,6 +10,7 @@ export interface ColumnProfile {
   min?: number;
   max?: number;
   isDateLike?: boolean;       // matches YYYY-MM or YYYY-MM-DD pattern
+  isIdentifier: boolean;      // true for identifier / foreign-key columns
 }
 
 export interface DataProfile {
@@ -38,6 +39,25 @@ function detectColumnType(value: unknown): ColumnType {
 function isDateLikeValue(value: unknown): boolean {
   if (typeof value !== 'string') return false;
   return /^\d{4}-\d{2}(-\d{2})?$/.test(value);
+}
+
+function isIdentifierColumn(columnName: string): boolean {
+  const lower = columnName.toLowerCase();
+  return (
+    lower === 'id' ||
+    lower.endsWith('_id') ||
+    (lower.endsWith('id') && (
+      lower.includes('owner') ||
+      lower.includes('recruiter') ||
+      lower.includes('candidate') ||
+      lower.includes('job') ||
+      lower.includes('company') ||
+      lower.includes('account') ||
+      lower.includes('contact') ||
+      lower.includes('client') ||
+      lower.includes('user')
+    ))
+  );
 }
 
 export function buildDataProfile(data: unknown[]): DataProfile {
@@ -92,13 +112,14 @@ export function buildDataProfile(data: unknown[]): DataProfile {
     }
 
     const isDateLike = nonNullValues.some(v => isDateLikeValue(v));
+    const isIdentifier = isIdentifierColumn(name);
 
-    return { name, type, cardinality, nullCount, sampleValues, isMonotonic, min, max, isDateLike };
+    return { name, type, cardinality, nullCount, sampleValues, isMonotonic, min, max, isDateLike, isIdentifier };
   });
 
   // Profile-level computed fields
   const hasTimeSeriesColumn = columns.some(c => c.isDateLike || c.type === 'date');
-  const hasNumericMetric = columns.some(c => c.type === 'number');
+  const hasNumericMetric = columns.some(c => c.type === 'number' && !c.isIdentifier);
   const stringColumns = columns.filter(c => c.type === 'string');
   const maxCardinality = stringColumns.reduce((max, c) => Math.max(max, c.cardinality), 0);
   const isHighCardinality = maxCardinality > 30;

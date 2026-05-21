@@ -1,10 +1,16 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.QUERY_TIMEOUT_MS = void 0;
+exports.extractTableNames = extractTableNames;
 exports.validateSql = validateSql;
 exports.normalizeReservedAliases = normalizeReservedAliases;
 exports.rewriteSemanticAliases = rewriteSemanticAliases;
 exports.checkReservedAliasUsage = checkReservedAliasUsage;
+exports.getColumnRefsFromSql = getColumnRefsFromSql;
+exports.validateSqlForOnlyFullGroupBy = validateSqlForOnlyFullGroupBy;
+exports.rewriteGroupByAliases = rewriteGroupByAliases;
+exports.stripAggregatesFromGroupBy = stripAggregatesFromGroupBy;
+exports.hasNestedAggregates = hasNestedAggregates;
 const node_sql_parser_1 = require("node-sql-parser");
 const parser = new node_sql_parser_1.Parser();
 const ALLOWED_TABLES = new Set([
@@ -113,6 +119,26 @@ function collectColumnRefs(node, results = []) {
         }
     }
     return results;
+}
+function extractTableNames(sql) {
+    const cteNames = new Set();
+    const cteRegex = /\bWITH\b[\s\S]*?(\w+)\s+AS\s*\(/gi;
+    let cteMatch;
+    while ((cteMatch = cteRegex.exec(sql)) !== null) {
+        if (cteMatch[1]) {
+            cteNames.add(cteMatch[1].toLowerCase());
+        }
+    }
+    const tableRegex = /\bFROM\s+([\w.]+)|\bJOIN\s+([\w.]+)/gi;
+    const tables = [];
+    let match;
+    while ((match = tableRegex.exec(sql)) !== null) {
+        const tableName = (match[1] || match[2] || '').toLowerCase().split('.').pop() || '';
+        if (tableName && !cteNames.has(tableName)) {
+            tables.push(tableName);
+        }
+    }
+    return tables;
 }
 function collectCteNames(ast) {
     const withClause = ast?.with;
@@ -288,9 +314,8 @@ function preParseChecks(sql) {
         return 'Only single SELECT queries are allowed.';
     return null;
 }
-function validateAst(ast) {
-    const scopeCtes = new Set(collectCteNames(ast));
-    const tableNames = collectTableNames(ast, scopeCtes);
+function validateAst(ast, sql) {
+    const tableNames = extractTableNames(sql);
     for (const tableName of tableNames) {
         if (!ALLOWED_TABLES.has(tableName)) {
             return 'Query references a data source that is not available.';
@@ -319,7 +344,7 @@ function validateAst(ast) {
     for (const sub of subqueryNodes) {
         if (sub === ast)
             continue;
-        const subError = validateAst(sub);
+        const subError = validateAst(sub, sql);
         if (subError)
             return subError;
     }
@@ -342,7 +367,7 @@ function validateSql(sql) {
     if (ast?.type?.toLowerCase() !== 'select') {
         return { safe: false, reason: 'Only SELECT queries are allowed.' };
     }
-    const astError = validateAst(ast);
+    const astError = validateAst(ast, trimmed);
     if (astError)
         return { safe: false, reason: astError };
     let sanitizedSql = trimmed;
@@ -434,4 +459,184 @@ function checkReservedAliasUsage(sql) {
     if (!ast)
         return [];
     return collectBlockedAliasUsage(ast);
+}
+function getColumnRefsFromSql(sql) {
+    const trimmed = String(sql || '').trim().replace(/;\s*$/, '');
+    let ast;
+    try {
+        const result = parser.astify(trimmed, { database: 'MySQL' });
+        ast = Array.isArray(result) ? result[0] : result;
+    }
+    catch {
+        return [];
+    }
+    return collectColumnRefs(ast, []);
+}
+function validateSqlForOnlyFullGroupBy(sql) {
+    if (!sql || typeof sql !== 'string')
+        return null;
+    let ast;
+    try {
+        const result = parser.astify(sql.trim().replace(/;\s*$/, ''), { database: 'MySQL' });
+        ast = Array.isArray(result) ? result[0] : result;
+    }
+    catch {
+        return null;
+    }
+    const selectNodes = [ast, ...collectNodes(ast, 'select').filter((n) => n !== ast)];
+    for (const selectNode of selectNodes) {
+        const columns = selectNode?.columns || [];
+        const groupByExprs = getGroupByExpressions(selectNode?.groupby || selectNode?.groupBy || null);
+        // Detect aggregates in select list
+        let hasAggregateInSelect = false;
+        let nonAggregateCount = 0;
+        for (const col of columns) {
+            const expr = col?.expr ?? col;
+            if (expressionContainsAggregate(expr)) {
+                hasAggregateInSelect = true;
+            }
+            else {
+                nonAggregateCount += 1;
+            }
+        }
+        if (hasAggregateInSelect && (!groupByExprs || groupByExprs.length === 0)) {
+            if (nonAggregateCount > 0) {
+                return 'Aggregates present but no GROUP BY — non-aggregated fields detected.';
+            }
+        }
+        // GROUP BY must not contain aggregates
+        for (const g of groupByExprs) {
+            if (expressionContainsAggregate(g)) {
+                return 'GROUP BY clause cannot contain aggregate functions (COUNT, SUM, AVG, MIN, MAX). Remove the aggregate expression from the GROUP BY clause.';
+            }
+        }
+        // GROUP BY must not reference SELECT aliases (unqualified alias usage)
+        const selectAliases = new Set();
+        for (const col of columns) {
+            const asName = normalizeName(col?.as);
+            if (asName)
+                selectAliases.add(asName);
+        }
+        for (const g of groupByExprs) {
+            if (g?.type === 'column_ref' && !g.table && g.column) {
+                const colName = normalizeName(g.column);
+                if (selectAliases.has(colName)) {
+                    return `GROUP BY references SELECT alias '${colName}'. Use the full expression instead: repeat the source expression from SELECT.`;
+                }
+            }
+        }
+    }
+    return null;
+}
+function rewriteGroupByAliases(sql) {
+    let ast;
+    try {
+        const result = parser.astify(sql.trim().replace(/;\s*$/, ''), { database: 'MySQL' });
+        ast = Array.isArray(result) ? result[0] : result;
+    }
+    catch {
+        return sql;
+    }
+    const selectNodes = [ast, ...collectNodes(ast, 'select').filter((n) => n !== ast)];
+    for (const selectNode of selectNodes) {
+        const aliasMap = {};
+        for (const col of selectNode?.columns || []) {
+            const alias = normalizeName(col?.as);
+            if (alias && col?.expr) {
+                aliasMap[alias] = col.expr;
+            }
+        }
+        if (!Object.keys(aliasMap).length)
+            continue;
+        const groupBy = selectNode?.groupby || selectNode?.groupBy;
+        if (!groupBy)
+            continue;
+        const exprs = getGroupByExpressions(groupBy);
+        const rewritten = exprs.map((g) => {
+            if (g?.type === 'column_ref' && !g.table && g.column) {
+                const name = normalizeName(g.column);
+                if (aliasMap[name]) {
+                    // clone the alias expression
+                    return JSON.parse(JSON.stringify(aliasMap[name]));
+                }
+            }
+            return g;
+        });
+        // assign back
+        if (Array.isArray(groupBy)) {
+            selectNode.groupby = rewritten;
+        }
+        else if (groupBy && groupBy.columns) {
+            selectNode.groupby.columns = rewritten;
+        }
+        else {
+            selectNode.groupby = rewritten;
+        }
+    }
+    try {
+        return parser.sqlify(ast, { database: 'MySQL' });
+    }
+    catch {
+        return sql;
+    }
+}
+function stripAggregatesFromGroupBy(sql) {
+    let ast;
+    try {
+        const result = parser.astify(sql.trim().replace(/;\s*$/, ''), { database: 'MySQL' });
+        ast = Array.isArray(result) ? result[0] : result;
+    }
+    catch {
+        return sql;
+    }
+    const selectNodes = [ast, ...collectNodes(ast, 'select').filter((n) => n !== ast)];
+    for (const selectNode of selectNodes) {
+        const groupBy = selectNode?.groupby || selectNode?.groupBy;
+        if (!groupBy)
+            continue;
+        const exprs = getGroupByExpressions(groupBy);
+        const filtered = exprs.filter((g) => !expressionContainsAggregate(g));
+        if (filtered.length === 0) {
+            delete selectNode.groupby;
+        }
+        else if (Array.isArray(groupBy)) {
+            selectNode.groupby = filtered;
+        }
+        else if (groupBy && groupBy.columns) {
+            selectNode.groupby.columns = filtered;
+        }
+        else {
+            selectNode.groupby = filtered;
+        }
+    }
+    try {
+        return parser.sqlify(ast, { database: 'MySQL' });
+    }
+    catch {
+        return sql;
+    }
+}
+function hasNestedAggregates(sql) {
+    if (!sql || typeof sql !== 'string')
+        return false;
+    let ast;
+    try {
+        const result = parser.astify(sql.trim().replace(/;\s*$/, ''), { database: 'MySQL' });
+        ast = Array.isArray(result) ? result[0] : result;
+    }
+    catch {
+        return false;
+    }
+    const aggrFuncs = collectFunctions(ast).filter((f) => f.type === 'aggr_func');
+    for (const f of aggrFuncs) {
+        for (const key of Object.keys(f)) {
+            const child = f[key];
+            if (child && typeof child === 'object') {
+                const innerFuncs = collectFunctions(child);
+                if (innerFuncs.some((ifn) => ifn.type === 'aggr_func'))
+                    return true;
+            }
+        }
+    }
+    return false;
 }

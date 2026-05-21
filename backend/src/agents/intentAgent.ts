@@ -7,8 +7,8 @@ import { buildFrozenIntentPrefix } from '../utils/promptTokens';
 const FIXED_TIME_RANGES = ['last_7d', 'last_30d', 'last_90d', 'last_12m', 'this_month', 'this_year', 'all_time', 'custom'] as const;
 
 const IntentAnalysisSchema = z.object({
-  tables: z.array(z.enum(['tblcandidate', 'tblassignjobcandidate', 'tbldeals', 'tbljob'])).min(1),
-  metricType: z.enum(['count', 'sum', 'average', 'ratio', 'trend', 'distribution', 'scalar']),
+  tables: z.array(z.enum(['tblcandidate', 'tblassignjobcandidate', 'tbldeals', 'tbljob'])).min(0),
+  metricType: z.enum(['count', 'sum', 'average', 'ratio', 'trend', 'distribution', 'scalar', 'lookup']),
   timeRange: z.union([
     z.enum(FIXED_TIME_RANGES),
     z.string().refine(isSupportedDynamicTimeRange),
@@ -18,8 +18,11 @@ const IntentAnalysisSchema = z.object({
   dimensions: z.array(z.string()),
   isAnalytics: z.boolean(),
   needsClarification: z.string().nullable(),
-  chartHint: z.enum(['bar', 'line', 'pie', 'table']).nullable(),
+  chartHint: z.enum(['bar', 'line', 'pie', 'table', 'none']).nullable(),
   intent: z.string(),
+  confidence: z.number().min(0).max(1),
+  confidenceReason: z.string().nullable(),
+  clarificationQuestion: z.string().nullable(),
 });
 
 export type IntentAnalysis = z.infer<typeof IntentAnalysisSchema>;
@@ -161,9 +164,110 @@ function isSupportedDynamicTimeRange(value: string): boolean {
   return false;
 }
 
+function buildClarificationQuestion(userPrompt: string): string {
+  const normalized = userPrompt.toLowerCase();
+  const hasJobEntity = /\b(job|jobs|hiring|hiring role|opening|openings|requisition|requisitions)\b/i.test(normalized);
+  const hasCandidateEntity = /\b(candidate|candidates|applicant|applicants|talent)\b/i.test(normalized);
+  const hasDealEntity = /\b(deal|deals|revenue|billing|deal value)\b/i.test(normalized);
+  const hasAssignmentEntity = /\b(assignment|assignments|pipeline|placement|funnel)\b/i.test(normalized);
+  const hasAnyEntity = hasJobEntity || hasCandidateEntity || hasDealEntity || hasAssignmentEntity;
+  const lookupVerb = /\b(list|show|find|get|give me|who|which|available|active|search)\b/i.test(normalized);
+  const metricVerb = /\b(total|count|how many|average|avg|mean|trend|compare|comparison|growth|variance|sum|ratio)\b/i.test(normalized);
+  const timeHint = /\b(time|month|week|year|recent|latest|last|right now|now|current|today|yesterday|active|open|closed|this month|this year|last 30 days|last 3 months|last 12 months)\b/i.test(normalized);
+
+  if (hasAnyEntity && lookupVerb) {
+    return 'Which records should I list?';
+  }
+
+  if (hasAnyEntity && metricVerb && !timeHint) {
+    return 'Which time range should I use?';
+  }
+
+  if (hasAnyEntity) {
+    if (hasJobEntity) {
+      return 'What should I show for jobs - a count, a list, or a trend?';
+    }
+
+    if (hasCandidateEntity) {
+      return 'What should I show for candidates - a count, a list, or a trend?';
+    }
+
+    if (hasDealEntity) {
+      return 'What should I show for deals - a count, a list, or a trend?';
+    }
+
+    if (hasAssignmentEntity) {
+      return 'What should I show for assignments - a count, a list, or a trend?';
+    }
+  }
+
+  return 'What would you like me to look up or summarize?';
+}
+
+function estimateConfidence(userPrompt: string): { confidence: number; confidenceReason: string | null; clarificationQuestion: string | null } {
+  const normalized = userPrompt.toLowerCase();
+  const hasJobEntity = /\b(job|jobs|hiring|hiring role|opening|openings|requisition|requisitions)\b/i.test(normalized);
+  const hasCandidateEntity = /\b(candidate|candidates|applicant|applicants|talent)\b/i.test(normalized);
+  const hasDealEntity = /\b(deal|deals|revenue|billing|deal value)\b/i.test(normalized);
+  const hasAssignmentEntity = /\b(assignment|assignments|pipeline|placement|funnel)\b/i.test(normalized);
+  const hasEntity = hasJobEntity || hasCandidateEntity || hasDealEntity || hasAssignmentEntity;
+
+  const hasLookupVerb = /\b(list|show|find|get|give me|who|which|available|active|search)\b/i.test(normalized);
+  const hasMetricVerb = /\b(total|count|how many|average|avg|mean|trend|change|growth|variance|dropout|turnaround|cumulative|running total|compare|comparison|sum|ratio)\b/i.test(normalized);
+  const hasScope = /\b(right now|now|current|active|open|closed|last|today|yesterday|week|month|year|recent|latest|rolling|this month|this year|last 30 days|last 3 months|last 12 months)\b/i.test(normalized);
+  const vague = /\b(draw a chart|show me something|something interesting|compare performance|show trends|show performance)\b/i.test(normalized) || (!hasEntity && !hasLookupVerb && !hasMetricVerb);
+
+  if (hasEntity && (hasLookupVerb || hasMetricVerb)) {
+    return {
+      confidence: 0.95,
+      confidenceReason: null,
+      clarificationQuestion: null,
+    };
+  }
+
+  if (hasEntity && hasScope) {
+    return {
+      confidence: 0.9,
+      confidenceReason: null,
+      clarificationQuestion: null,
+    };
+  }
+
+  if (hasEntity) {
+    return {
+      confidence: 0.8,
+      confidenceReason: 'The request names a clear entity, but the metric or listing intent is only partly specified.',
+      clarificationQuestion: null,
+    };
+  }
+
+  if (vague) {
+    return {
+      confidence: 0.1,
+      confidenceReason: 'The request is vague and does not specify a metric, table, or time range.',
+      clarificationQuestion: buildClarificationQuestion(userPrompt),
+    };
+  }
+
+  if (!hasEntity && !hasLookupVerb && !hasMetricVerb && !hasScope) {
+    return {
+      confidence: 0.2,
+      confidenceReason: 'The request does not clearly identify a recruitment entity, metric, or time window.',
+      clarificationQuestion: buildClarificationQuestion(userPrompt),
+    };
+  }
+
+  return {
+    confidence: 0.6,
+    confidenceReason: 'The request has partial structure but still leaves ambiguity in the entity, metric, or scope.',
+    clarificationQuestion: buildClarificationQuestion(userPrompt),
+  };
+}
+
 /** Default fallback when intent analysis fails or times out */
 export function buildIntentFallback(userPrompt: string): IntentAnalysis {
   const parsedTimeRange = parseTimeRange(userPrompt);
+  const confidence = estimateConfidence(userPrompt);
 
   return {
     tables: ['tblcandidate', 'tblassignjobcandidate', 'tbldeals', 'tbljob'],
@@ -175,6 +279,31 @@ export function buildIntentFallback(userPrompt: string): IntentAnalysis {
     needsClarification: null,
     chartHint: null,
     intent: userPrompt,
+    confidence: confidence.confidence,
+    confidenceReason: confidence.confidenceReason,
+    clarificationQuestion: confidence.clarificationQuestion,
+  };
+}
+
+function hasAnalyticalSignals(userPrompt: string): boolean {
+  const normalized = userPrompt.toLowerCase();
+
+  return /\b(top\s*\d+|top|per|group by|based on|rank|ranking|average|avg|mean|sum|total|count|trend|distribution|stddev|standard deviation|variance|outlier|deviation)\b/.test(normalized);
+}
+
+function coerceIntentForChartability(intent: IntentAnalysis, userPrompt: string): IntentAnalysis {
+  if (intent.metricType !== 'lookup') {
+    return intent;
+  }
+
+  if (!hasAnalyticalSignals(userPrompt)) {
+    return intent;
+  }
+
+  return {
+    ...intent,
+    metricType: 'distribution',
+    chartHint: intent.chartHint === 'none' || intent.chartHint === null ? 'bar' : intent.chartHint,
   };
 }
 
@@ -206,22 +335,22 @@ export async function analyzeIntent(
     'Identify which tables are needed and what the user wants to measure.',
   ].join('\n');
 
-  // 3-second timeout to prevent pipeline stalls if intent agent hangs
+  // 6-second timeout to prevent pipeline stalls if intent agent hangs
   try {
     const completion = await Promise.race([
       groq.chat.completions.create({
-        model: 'llama-3.3-70b-versatile',
+        model: 'openai/gpt-oss-20b',
         messages: [
           // FROZEN system prompt goes first — maximizes token cache hit rate
           { role: 'system', content: [FROZEN_INTENT_SYSTEM, TABLE_HINTS].join('\n\n') },
           { role: 'user', content: userMessage },
         ],
         temperature: 0.1,
-        max_tokens: 300,    // intent analysis is small
+        max_tokens: 250,
         response_format: { type: 'json_object' },
       }),
       new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Intent agent timeout (3s)')), 3000)
+        setTimeout(() => reject(new Error('Intent agent timeout (6s)')), 6000)
       ),
     ]);
 
@@ -242,18 +371,20 @@ export async function analyzeIntent(
     }
 
     success = true;
-    return {
+    const normalizedIntent = {
       ...result.data,
       timeRange: result.data.timeRange ?? parsedTimeRange?.normalizedTimeRange ?? null,
       normalizedTimeRange: parsedTimeRange?.normalizedTimeRange || result.data.normalizedTimeRange || null,
     };
+
+    return coerceIntentForChartability(normalizedIntent, userPrompt);
   } catch (err: any) {
     errorMessage = err?.message || String(err);
     throw err;
   } finally {
     logAICall({
       callType: 'intent_analysis',
-      model: 'llama-3.3-70b-versatile',
+      model: 'openai/gpt-oss-20b',
       sessionId: options?.sessionId,
       userPrompt,
       success,

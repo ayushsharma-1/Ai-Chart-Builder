@@ -1,7 +1,7 @@
 'use client';
 
 import { Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts';
-import { formatTooltipValue } from '@/lib/chartUtils';
+import { formatChartMetricValue } from '@/lib/chartUtils';
 
 interface Props {
   data: any[];
@@ -24,7 +24,7 @@ function CustomTooltip({ active, payload }: any) {
         <span className="h-2 w-2 rounded-full" style={{ backgroundColor: entry.payload.fill || entry.color }} />
         <span className="text-[#7B7B9A]">{entry.name}:</span>
         <span className="font-semibold text-[#F0F0FF]">
-          {formatTooltipValue(Number(entry.value || 0), String(dataKey))}
+          {formatChartMetricValue(Number(entry.value || 0), String(dataKey))}
         </span>
       </div>
     </div>

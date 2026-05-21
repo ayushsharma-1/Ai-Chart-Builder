@@ -27,6 +27,65 @@ export function formatCompactNumber(value: unknown): string {
   return num.toString();
 }
 
+function isCountLikeMetricKey(normalizedKey: string): boolean {
+  return (
+    normalizedKey.includes('count') ||
+    normalizedKey.includes('quantity') ||
+    normalizedKey.includes('number') ||
+    normalizedKey.includes('placement') ||
+    normalizedKey.includes('job') ||
+    normalizedKey.includes('candidate') ||
+    normalizedKey.includes('listing') ||
+    normalizedKey.includes('opening') ||
+    normalizedKey.includes('requisition') ||
+    normalizedKey.includes('record') ||
+    normalizedKey.includes('row') ||
+    normalizedKey === 'recruiter' ||
+    normalizedKey === 'candidate_count'
+  );
+}
+
+function isCurrencyLikeMetricKey(normalizedKey: string): boolean {
+  return (
+    normalizedKey.includes('revenue') ||
+    normalizedKey.includes('billing') ||
+    normalizedKey.includes('deal') ||
+    normalizedKey.includes('amount') ||
+    normalizedKey.includes('tax') ||
+    normalizedKey.includes('value')
+  );
+}
+
+export function formatChartMetricValue(value: unknown, key: string): string {
+  if (value === null || value === undefined) return '';
+
+  const num = Number(value);
+  if (!Number.isFinite(num)) return String(value);
+
+  const normalizedKey = key.toLowerCase();
+
+  if (isCountLikeMetricKey(normalizedKey)) {
+    return Math.round(num).toLocaleString();
+  }
+
+  if (
+    normalizedKey.includes('avg') ||
+    normalizedKey.includes('average') ||
+    normalizedKey.includes('size') ||
+    normalizedKey.includes('rate') ||
+    normalizedKey.includes('percent')
+  ) {
+    const formatted = Math.abs(num) < 1000 ? num.toFixed(2).replace(/\.00$/, '') : formatCompactNumber(num);
+    return isCurrencyLikeMetricKey(normalizedKey) ? `$${formatted}` : formatted;
+  }
+
+  if (isCurrencyLikeMetricKey(normalizedKey)) {
+    return `$${Math.round(num).toLocaleString()}`;
+  }
+
+  return num.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
 /**
  * Intelligently formats tooltip values based on their metric keys.
  * Standardizes:
@@ -35,60 +94,7 @@ export function formatCompactNumber(value: unknown): string {
  * - Counts -> standard integer format with commas
  */
 export function formatTooltipValue(value: number, key: string): string {
-  const normalizedKey = key.toLowerCase();
-
-  // If it's a count, id, quantity, or recruiter series
-  if (
-    normalizedKey.includes('count') ||
-    normalizedKey.includes('quantity') ||
-    normalizedKey.includes('id') ||
-    normalizedKey.includes('number') ||
-    normalizedKey.includes('placement') ||
-    normalizedKey === 'recruiter' ||
-    normalizedKey === 'candidate_count'
-  ) {
-    return Math.round(value).toLocaleString();
-  }
-
-  // If it's average, deal size, rate, or percentage, format as a clean rounded/limited decimal compact value
-  if (
-    normalizedKey.includes('avg') ||
-    normalizedKey.includes('average') ||
-    normalizedKey.includes('size') ||
-    normalizedKey.includes('rate') ||
-    normalizedKey.includes('percent')
-  ) {
-    const isMonetary =
-      normalizedKey.includes('billing') ||
-      normalizedKey.includes('deal') ||
-      normalizedKey.includes('amount') ||
-      normalizedKey.includes('revenue') ||
-      normalizedKey.includes('value');
-    
-    // Use limited decimals for small averages, or compact format for larger averages
-    if (Math.abs(value) < 1000) {
-      const formatted = value.toFixed(2).replace(/\.00$/, '');
-      return isMonetary ? `$${formatted}` : formatted;
-    }
-    const formatted = formatCompactNumber(value);
-    return isMonetary ? `$${formatted}` : formatted;
-  }
-
-  // If it's general revenue/monetary value (total, tax, billingamount, dealvalue, revenue, amount)
-  if (
-    normalizedKey.includes('revenue') ||
-    normalizedKey.includes('billing') ||
-    normalizedKey.includes('deal') ||
-    normalizedKey.includes('amount') ||
-    normalizedKey.includes('total') ||
-    normalizedKey.includes('tax') ||
-    normalizedKey.includes('value')
-  ) {
-    return `$${Math.round(value).toLocaleString()}`;
-  }
-
-  // Fallback to standard formatted number with up to 2 decimal places
-  return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  return formatChartMetricValue(value, key);
 }
 
 /**
@@ -164,7 +170,7 @@ export function calculateAxisWidths(
     Object.entries(assignments).forEach(([key, axis]) => {
       const val = Number(row?.[key]);
       if (Number.isFinite(val)) {
-        const formatted = formatCompactNumber(val);
+        const formatted = formatChartMetricValue(val, key);
         if (axis === 'left') {
           maxLeftLen = Math.max(maxLeftLen, formatted.length);
         } else {

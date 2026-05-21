@@ -4,8 +4,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.logAICall = logAICall;
-const fs_1 = __importDefault(require("fs"));
-const path_1 = __importDefault(require("path"));
+const node_fs_1 = __importDefault(require("node:fs"));
+const node_path_1 = __importDefault(require("node:path"));
 const GROQ_PRICING = {
     'llama-3.3-70b-versatile': { input: 0.59, output: 0.79 },
     'llama-3.1-8b-instant': { input: 0.05, output: 0.08 },
@@ -18,24 +18,24 @@ function calculateCost(model, promptTokens, completionTokens) {
     const inputCostUsd = (promptTokens / 1000000) * pricing.input;
     const outputCostUsd = (completionTokens / 1000000) * pricing.output;
     return {
-        inputCostUsd: parseFloat(inputCostUsd.toFixed(8)),
-        outputCostUsd: parseFloat(outputCostUsd.toFixed(8)),
-        totalCostUsd: parseFloat((inputCostUsd + outputCostUsd).toFixed(8)),
+        inputCostUsd: Number.parseFloat(inputCostUsd.toFixed(8)),
+        outputCostUsd: Number.parseFloat(outputCostUsd.toFixed(8)),
+        totalCostUsd: Number.parseFloat((inputCostUsd + outputCostUsd).toFixed(8)),
     };
 }
-const LOG_DIR = path_1.default.resolve(process.cwd(), 'logs');
+const LOG_DIR = node_path_1.default.resolve(process.cwd(), 'logs');
 function ensureLogDir() {
-    if (!fs_1.default.existsSync(LOG_DIR)) {
-        fs_1.default.mkdirSync(LOG_DIR, { recursive: true });
+    if (!node_fs_1.default.existsSync(LOG_DIR)) {
+        node_fs_1.default.mkdirSync(LOG_DIR, { recursive: true });
     }
 }
 function getLogFilePath(date) {
-    return path_1.default.join(LOG_DIR, `ai-metrics-${date}.ndjson`);
+    return node_path_1.default.join(LOG_DIR, `ai-metrics-${date}.ndjson`);
 }
 function writeEntry(entry) {
     try {
         ensureLogDir();
-        fs_1.default.appendFileSync(getLogFilePath(entry.date), `${JSON.stringify(entry)}\n`, 'utf8');
+        node_fs_1.default.appendFileSync(getLogFilePath(entry.date), `${JSON.stringify(entry)}\n`, 'utf8');
     }
     catch (error) {
         console.error('[AIMetrics] Failed to write log entry:', error?.message || error);
@@ -55,6 +55,9 @@ function logAICall(input) {
         userPrompt: input.userPrompt ? input.userPrompt.slice(0, 200) : undefined,
         success: input.success,
         errorMessage: input.errorMessage,
+        sqlFlow: input.sqlFlow,
+        query: input.query,
+        errorDetails: input.errorDetails,
         latencyMs: input.latencyMs,
         tokens: {
             promptTokens,

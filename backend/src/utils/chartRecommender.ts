@@ -99,7 +99,7 @@ export function recommendChart(input: RecommendationInput): ChartRecommendation 
   const xAxis = chooseXAxis(input);
   const decision = recommendChartType(input.data, suggestedType, xAxis, columns);
   const yAxis = chooseYAxisList(input, xAxis);
-  const seriesKeys = buildSeriesKeys(input.data, xAxis, yAxis);
+  const seriesKeys = buildSeriesKeys(input.dataProfile, input.data, xAxis, yAxis);
   const xColumn = input.dataProfile.columns.find((column) => column.name === xAxis);
   const sliceCount = xColumn?.cardinality ?? input.dataProfile.rowCount;
   const comparative = Array.isArray(seriesKeys) && seriesKeys.length > 1;
@@ -161,19 +161,20 @@ function chooseYAxisList(input: RecommendationInput, xAxis: string): string[] {
   }
 
   const numericColumns = input.dataProfile.columns
-    .filter((column) => column.type === 'number' && column.name !== xAxis)
+    .filter((column) => column.type === 'number' && !column.isIdentifier && column.name !== xAxis)
     .map((column) => column.name);
 
   return numericColumns.length > 0 ? numericColumns : input.dataProfile.columns.filter((column) => column.name !== xAxis).map((column) => column.name).slice(0, 1);
 }
 
-function buildSeriesKeys(data: Record<string, unknown>[], xAxis: string, yAxis: string[]): string[] | undefined {
+function buildSeriesKeys(dataProfile: DataProfile, data: Record<string, unknown>[], xAxis: string, yAxis: string[]): string[] | undefined {
   if (data.length === 0) {
     return yAxis.length > 0 ? yAxis : undefined;
   }
 
-  const dataColumns = Object.keys(data[0] || {});
-  const numericCols = dataColumns.filter((column) => column !== xAxis && data.slice(0, 3).every((row) => !Number.isNaN(Number(row[column]))));
+  const numericCols = dataProfile.columns
+    .filter((column) => column.type === 'number' && !column.isIdentifier && column.name !== xAxis)
+    .map((column) => column.name);
 
   if (numericCols.length >= 2) {
     return numericCols;

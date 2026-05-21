@@ -138,6 +138,31 @@ function collectColumnRefs(node: any, results: Array<{ table: string | null; col
   return results;
 }
 
+export function extractTableNames(sql: string): string[] {
+  const cteNames = new Set<string>();
+  const cteRegex = /\bWITH\b[\s\S]*?(\w+)\s+AS\s*\(/gi;
+  let cteMatch: RegExpExecArray | null;
+
+  while ((cteMatch = cteRegex.exec(sql)) !== null) {
+    if (cteMatch[1]) {
+      cteNames.add(cteMatch[1].toLowerCase());
+    }
+  }
+
+  const tableRegex = /\bFROM\s+([\w.]+)|\bJOIN\s+([\w.]+)/gi;
+  const tables: string[] = [];
+  let match: RegExpExecArray | null;
+
+  while ((match = tableRegex.exec(sql)) !== null) {
+    const tableName = (match[1] || match[2] || '').toLowerCase().split('.').pop() || '';
+    if (tableName && !cteNames.has(tableName)) {
+      tables.push(tableName);
+    }
+  }
+
+  return tables;
+}
+
 function collectCteNames(ast: any): string[] {
   const withClause = ast?.with;
   if (!withClause) return [];
@@ -330,10 +355,8 @@ function preParseChecks(sql: string): string | null {
   return null;
 }
 
-function validateAst(ast: Select): string | null {
-  const scopeCtes = new Set(collectCteNames(ast));
-
-  const tableNames = collectTableNames(ast, scopeCtes);
+function validateAst(ast: Select, sql: string): string | null {
+  const tableNames = extractTableNames(sql);
   for (const tableName of tableNames) {
     if (!ALLOWED_TABLES.has(tableName)) {
       return 'Query references a data source that is not available.';
@@ -365,7 +388,7 @@ function validateAst(ast: Select): string | null {
   const subqueryNodes = collectNodes(ast, 'select');
   for (const sub of subqueryNodes) {
     if (sub === ast) continue;
-    const subError = validateAst(sub as Select);
+    const subError = validateAst(sub as Select, sql);
     if (subError) return subError;
   }
 
@@ -391,7 +414,7 @@ export function validateSql(sql: string): SqlGuardResult {
     return { safe: false, reason: 'Only SELECT queries are allowed.' };
   }
 
-  const astError = validateAst(ast as Select);
+  const astError = validateAst(ast as Select, trimmed);
   if (astError) return { safe: false, reason: astError };
 
   let sanitizedSql = trimmed;

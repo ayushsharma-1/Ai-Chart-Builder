@@ -22,7 +22,13 @@ function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : 'Something went wrong. Please try again later.';
 }
 
-function replaceLoadingMessage(session: ChatSession, content: string, chartResult?: ChartResult, status: 'done' | 'error' = 'done') {
+function replaceLoadingMessage(
+  session: ChatSession,
+  content: string,
+  chartResult?: ChartResult,
+  status: 'done' | 'error' = 'done',
+  type?: Message['type'],
+) {
   return {
     ...session,
     updatedAt: new Date().toISOString(),
@@ -35,6 +41,7 @@ function replaceLoadingMessage(session: ChatSession, content: string, chartResul
         ...message,
         content,
         status,
+        ...(type ? { type } : {}),
         ...(chartResult ? { chartResult } : {}),
       };
     }),
@@ -231,6 +238,7 @@ export function useQuery() {
         const result: ChartResult = {
           title: data.title,
           chartType: data.chartType,
+          renderAs: data.renderAs,
           chartConfig: data.chartConfig,
           data: data.data,
           rowCount: data.rowCount,
@@ -253,16 +261,19 @@ export function useQuery() {
         const overrideNote = data.chartOverrideReason
           ? ` _(Chart adjusted: ${data.chartOverrideReason})_`
           : '';
+        const successMessage = data.renderAs === 'text'
+          ? `Lookup ready: ${data.title}. ${data.rowCount} rows in ${data.executionTimeMs}ms.${overrideNote}`
+          : `Chart ready: ${data.title}. ${data.rowCount} rows in ${data.executionTimeMs}ms.${overrideNote}`;
 
         setSessions((previous) => previous.map((session) => (
           session.id === activeSessionId
-            ? replaceLoadingMessage(session, `Chart ready: ${data.title}. ${data.rowCount} rows in ${data.executionTimeMs}ms.${overrideNote}`, result, 'done')
+            ? replaceLoadingMessage(session, successMessage, result, 'done')
             : session
         )));
       } else {
         setSessions((previous) => previous.map((session) => (
           session.id === activeSessionId
-            ? replaceLoadingMessage(session, data.message, undefined, 'error')
+            ? replaceLoadingMessage(session, data.message, undefined, 'error', data.type)
             : session
         )));
       }

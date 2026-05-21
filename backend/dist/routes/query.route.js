@@ -23,6 +23,9 @@ router.post('/', async (req, res) => {
             previousContext: body.previousContext,
         });
         if (!result.success) {
+            if (result.type === 'rate_limit') {
+                return res.status(429).json(result);
+            }
             // Return 422 for validation/clarification blocks, 200 for non-analytics
             const status = result.type === 'validation_error' ? 422 : 200;
             return res.status(status).json(result);
@@ -40,6 +43,13 @@ router.post('/', async (req, res) => {
                 type: 'llm_error',
                 message: 'GROQ_API_KEY is not configured. Set GROQ_API_KEY in backend/.env to enable LLM calls.',
                 details: process.env.NODE_ENV === 'development' ? err.message : undefined,
+            });
+        }
+        if ((0, agentOrchestrator_1.isGroqRateLimitError)(err)) {
+            return res.status(429).json({
+                success: false,
+                type: 'rate_limit',
+                message: err.message || String(err),
             });
         }
         return res.status(500).json({

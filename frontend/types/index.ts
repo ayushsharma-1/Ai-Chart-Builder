@@ -10,6 +10,7 @@ export interface ChartConfig {
 export interface ChartResult {
   title: string;
   chartType: ChartType;
+  renderAs?: 'chart' | 'text';
   chartConfig: ChartConfig;
   data: any[];
   rowCount: number;
@@ -39,6 +40,7 @@ export interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  type?: 'clarification' | 'non_analytics' | 'validation_error' | 'error';
   chartResult?: ChartResult;
   timestamp: Date;
   status?: 'loading' | 'done' | 'error';

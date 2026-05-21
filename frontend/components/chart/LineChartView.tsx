@@ -5,9 +5,8 @@ import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, X
 
 import { formatMetricLabel } from './ChartRenderer';
 import {
-  formatCompactNumber,
   buildAxisLabel,
-  formatTooltipValue,
+  formatChartMetricValue,
   getSeriesYAxisAssignment,
   calculateAxisWidths,
   truncateLabel,
@@ -44,7 +43,7 @@ function CustomTooltip({ active, payload, label }: any) {
               {formatMetricLabel(String(entry.name || entry.dataKey))}
             </span>
             <span className="font-semibold text-[#F0F0FF]">
-              {formatTooltipValue(Number(entry.value || 0), String(entry.dataKey))}
+              {formatChartMetricValue(Number(entry.value || 0), String(entry.dataKey))}
             </span>
           </div>
         ))}
@@ -78,6 +77,8 @@ export default function LineChartView(props: Readonly<Props>) {
   const { leftWidth, rightWidth } = calculateAxisWidths(data, assignments, useDualAxes);
   const leftAxisLabel = useDualAxes ? buildAxisLabel(visibleSeries, assignments, 'left') : undefined;
   const rightAxisLabel = useDualAxes ? buildAxisLabel(visibleSeries, assignments, 'right') : undefined;
+  const leftAxisMetricKey = visibleSeries.find((key) => assignments[key] === 'left') || yAxis;
+  const rightAxisMetricKey = visibleSeries.find((key) => assignments[key] === 'right') || yAxis;
 
   // X-axis label adjustments
   const shouldRotateLabels = data.length > (isMobile ? 5 : 10);
@@ -118,7 +119,7 @@ export default function LineChartView(props: Readonly<Props>) {
               axisLine={false}
               tickLine={false}
               width={leftWidth}
-              tickFormatter={formatCompactNumber}
+              tickFormatter={(value) => formatChartMetricValue(value, leftAxisMetricKey)}
               tickCount={isMobile ? 4 : 5}
               label={
                 leftAxisLabel
@@ -141,7 +142,7 @@ export default function LineChartView(props: Readonly<Props>) {
                 axisLine={false}
                 tickLine={false}
                 width={rightWidth}
-                tickFormatter={formatCompactNumber}
+                tickFormatter={(value) => formatChartMetricValue(value, rightAxisMetricKey)}
                 tickCount={isMobile ? 4 : 5}
                 label={
                   rightAxisLabel

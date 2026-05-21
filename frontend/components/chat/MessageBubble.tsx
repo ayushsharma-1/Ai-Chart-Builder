@@ -7,11 +7,16 @@ import { Message } from '@/types';
 import TypingIndicator from './TypingIndicator';
 
 interface Props {
-  message: Message;
+  readonly message: Message;
 }
 
 export default function MessageBubble({ message }: Props) {
   const isUser = message.role === 'user';
+  let bubbleClassName = 'bg-[#16161F] border border-[#1E1E2E] text-[#F0F0FF]';
+
+  if (message.status === 'error') {
+    bubbleClassName = 'bg-[#F87171]/10 border border-[#F87171]/20 text-[#F87171]';
+  }
 
   if (message.status === 'loading') {
     return (
@@ -40,11 +45,7 @@ export default function MessageBubble({ message }: Props) {
         <Sparkles size={13} className="text-white" />
       </div>
       <div
-        className={`max-w-[85%] px-4 py-3 rounded-2xl rounded-tl-sm text-sm leading-relaxed whitespace-pre-wrap ${
-          message.status === 'error'
-            ? 'bg-[#F87171]/10 border border-[#F87171]/20 text-[#F87171]'
-            : 'bg-[#16161F] border border-[#1E1E2E] text-[#F0F0FF]'
-        }`}
+        className={`max-w-[85%] px-4 py-3 rounded-2xl rounded-tl-sm text-sm leading-relaxed whitespace-pre-wrap ${bubbleClassName}`}
       >
         {message.status === 'error' && <AlertCircle size={13} className="inline mr-1.5 mb-0.5" />}
         {message.content}

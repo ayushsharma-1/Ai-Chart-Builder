@@ -14,7 +14,7 @@
  * Never inline these strings. Always import from this file.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.FROZEN_INTENT_OUTPUT_FORMAT = exports.FROZEN_OUTPUT_FORMAT = exports.FROZEN_CHART_RULES = exports.FROZEN_ALLOWED_FUNCTIONS = exports.FROZEN_FILTER_RULES = exports.FROZEN_SQL_RULES = exports.FROZEN_IDENTITY = void 0;
+exports.FROZEN_INTENT_OUTPUT_FORMAT = exports.FROZEN_OUTPUT_FORMAT = exports.FROZEN_CHART_RULES = exports.FROZEN_ALLOWED_FUNCTIONS = exports.FROZEN_WINDOW_FUNCTION_RULES = exports.FROZEN_COLUMN_CORRECTIONS = exports.FROZEN_FILTER_RULES = exports.FROZEN_SQL_RULES = exports.FROZEN_IDENTITY = void 0;
 exports.buildFrozenSystemPrefix = buildFrozenSystemPrefix;
 exports.buildFrozenIntentPrefix = buildFrozenIntentPrefix;
 exports.FROZEN_IDENTITY = `You are a read-only analytics assistant for an internal HR and recruitment platform built on MySQL 8.0.
@@ -34,6 +34,8 @@ CORE SQL RULES (read-only, MySQL 8.0):
 10. dealvalue is DECIMAL — no sanitization needed.
 11. In JOIN queries, always explicitly prefix columns with their correct table alias. Validate ownership before assigning an alias: e.g. 'name' belongs to tbljob, not tblassignjobcandidate.
 12. Build aliases deterministically before writing JOINs. Never use generic aliases like t1, t2, t3. Prefer schema-aware aliases such as job, assignment, candidate, and deal.
+13. CTE (WITH clause) RULES: CTEs are allowed and encouraged for complex analytics. CTE names are internal aliases only, not database tables. Only the base tables tblcandidate, tblassignjobcandidate, tbldeals, and tbljob may appear in FROM/JOIN inside the CTEs themselves.
+14. ORDER BY RULE: Only ORDER BY a column that is declared as a SELECT alias or a full SQL expression. Never ORDER BY a computed name that is not projected in SELECT.
 ====== HARD CONSTRAINTS — NEVER VIOLATE ======
 tblcandidate: ALWAYS add AND deleted = 0 to WHERE clause
 tbljob: ALWAYS add AND deleted = 0 to WHERE clause
@@ -46,7 +48,7 @@ CORRECT:
 SELECT * FROM tblassignjobcandidate WHERE candidatestatusid = 3
 WRONG (causes MySQL error ER_BAD_FIELD_ERROR):
 SELECT * FROM tblassignjobcandidate WHERE deleted = 0   ← FATAL ERROR
-tbldeals: ALWAYS add AND deleted = 0 to WHERE clause
+tbldeals: ALWAYS add AND archived = 0 to WHERE clause
 NEVER place aggregate functions (COUNT, SUM, AVG, MIN, MAX) inside a GROUP BY clause
 NEVER use FROM_UNIXTIME() or any function wrapping an aggregate inside GROUP BY
 For time bucketing: compute time bucket as a derived column in SELECT, reference the alias in GROUP BY
@@ -75,6 +77,71 @@ MANDATORY SAFETY FILTERS:
 In JOIN queries, only apply the filter for the table that actually has the column:
 CORRECT: FROM tbljob INNER JOIN tblassignjobcandidate ... WHERE tbljob.deleted = 0
 WRONG:   WHERE tbljob.deleted = 0 AND tblassignjobcandidate.deleted = 0`.trim();
+exports.FROZEN_COLUMN_CORRECTIONS = `
+COLUMN CORRECTION RULES — these are the most common mistakes, never make them:
+
+tbldeals:
+  - NO 'deleted' column -> use archived = 0 for filtering
+  - NO 'companyname' column -> company is stored as relatedcompany (integer FK)
+  - NO 'billingamount' column -> monetary field is dealvalue (DECIMAL, no sanitization needed)
+  - NO 'contactname' column -> use relatedcompany for company reference
+  - Primary key is 'id', NOT 'dealid'
+
+tbljob:
+  - Primary key is 'id', NOT 'jobid' - never use job.jobid
+  - NO 'companyname' column -> company is stored as companyid (integer FK)
+  - job_category is the correct column name, NOT 'category'
+  - ownerid exists and is correct
+  - deleted = 0 is the correct filter (NOT archived)
+
+tblassignjobcandidate:
+  - NO 'placementdate' column -> use joiningdate for placement/joining date
+  - NO 'deleted' column and NO 'archived' column -> apply NO filter here
+  - NO 'interviewdate' column -> stage transitions tracked via stagedate
+  - billingamount is VARCHAR - always sanitize: CAST(REPLACE(billingamount,',','') AS DECIMAL(15,2))
+  - Primary key is 'id'
+
+tblcandidate:
+  - Primary key is 'id', NOT 'candidateid'
+  - deleted = 0 is the correct filter (NOT archived)
+  - NO 'fullname' column -> use CONCAT(firstname, ' ', lastname)
+
+FILTER RULES (absolute, no exceptions):
+  tblcandidate:          WHERE tblcandidate.deleted = 0
+  tbljob:                WHERE tbljob.deleted = 0
+  tbldeals:              WHERE tbldeals.archived = 0
+  tblassignjobcandidate: NO filter - this table has neither deleted nor archived
+`.trim();
+exports.FROZEN_WINDOW_FUNCTION_RULES = `
+WINDOW FUNCTION RULES (critical - violations cause ONLY_FULL_GROUP_BY errors):
+
+Pattern: cumulative / running total / ROW_NUMBER / DENSE_RANK / PARTITION BY
+- NEVER mix window functions with GROUP BY in the same SELECT level.
+- Always compute aggregations in a CTE first, then apply window functions in the outer query.
+
+WRONG (causes ONLY_FULL_GROUP_BY failure):
+  SELECT owner, COUNT(*) AS placements,
+    SUM(COUNT(*)) OVER (PARTITION BY owner ORDER BY month) AS running_total
+  FROM tblassignjobcandidate GROUP BY owner, month
+
+CORRECT (CTE pattern - always use this):
+  WITH monthly AS (
+    SELECT ownerid,
+      DATE_FORMAT(FROM_UNIXTIME(createdon),'%Y-%m') AS month,
+      COUNT(*) AS placements
+    FROM tblassignjobcandidate
+    GROUP BY ownerid, DATE_FORMAT(FROM_UNIXTIME(createdon),'%Y-%m')
+  )
+  SELECT ownerid, month, placements,
+    SUM(placements) OVER (PARTITION BY ownerid ORDER BY month) AS running_total
+  FROM monthly
+  ORDER BY ownerid, month
+
+RULE: If the prompt contains any of these words:
+  cumulative, running total, rolling, YoY, quarter-over-quarter,
+  month-over-month, ROW_NUMBER, DENSE_RANK, RANK, PARTITION BY, LAG, LEAD
+-> ALWAYS use CTE pattern. Never attempt GROUP BY + window in same SELECT.
+`.trim();
 exports.FROZEN_ALLOWED_FUNCTIONS = `
 ALLOWED SQL FUNCTIONS:
 String:       REPLACE, CONCAT, SUBSTRING, TRIM, LTRIM, RTRIM, UPPER, LOWER, LENGTH, CHAR_LENGTH
@@ -128,13 +195,47 @@ OUTPUT FORMAT — respond ONLY with valid JSON matching this exact shape:
   "isAnalytics": true,
   "needsClarification": null,
   "chartHint": "bar" | "line" | "pie" | "table" | null,
-  "intent": "one-sentence description of what the user wants to see"
+  "intent": "one-sentence description of what the user wants to see",
+  "confidence": 0.0,
+  "confidenceReason": null,
+  "clarificationQuestion": null
+}
+
+Confidence scoring guide:
+  Score using three signals: entity, metric, and scope.
+  0.9-1.0: all three are clear (e.g. "Show total active jobs right now" = entity: jobs, metric: total, scope: active/right now)
+  0.7-0.9: two signals are clear and the third is implied (e.g. "Show recruiter performance")
+  0.5-0.7: one strong signal but one or two are still vague (e.g. "Compare performance", "Show trends")
+  0.0-0.5: no clear entity, metric, or scope (e.g. "Draw a chart", "Show me something")
+
+Entity hints:
+  - job / jobs / hiring / openings / requisitions -> tbljob
+  - candidate / candidates / applicants / talent -> tblcandidate
+  - deal / deals / revenue / billing -> tbldeals
+  - assignment / pipeline / placement / funnel -> tblassignjobcandidate
+
+Metric hints:
+  - total / count / how many / active -> count or scalar
+  - average / avg / mean -> average
+  - trend / change / growth / variance -> trend
+
+Scope hints:
+  - right now / now / active / current / open / closed / this month / last 30 days / last 12 months
+
+When confidence < 0.65, ALWAYS set clarificationQuestion to a specific, short question.
+Examples:
+  "Which metric should I show - total, average, or trend?"
+  "Which time range - last 30 days, 3 months, or 12 months?"
+  "Which dimension - by recruiter, by company, or by job?"
+  "Should I show active jobs by department, by recruiter, or just the total count?"
 }`.trim();
 /** Assembles the frozen prefix in cache-optimal order */
 function buildFrozenSystemPrefix() {
     return [
         exports.FROZEN_IDENTITY,
         exports.FROZEN_SQL_RULES,
+        exports.FROZEN_COLUMN_CORRECTIONS,
+        exports.FROZEN_WINDOW_FUNCTION_RULES,
         exports.FROZEN_FILTER_RULES,
         exports.FROZEN_ALLOWED_FUNCTIONS,
         exports.FROZEN_CHART_RULES,
