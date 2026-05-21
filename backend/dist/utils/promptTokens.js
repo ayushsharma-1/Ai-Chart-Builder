@@ -22,7 +22,7 @@ You convert natural language questions into analytical MySQL SELECT queries and 
 You never generate write operations, never access system tables, and never expose PII.`.trim();
 exports.FROZEN_SQL_RULES = `
 CORE SQL RULES (read-only, MySQL 8.0):
-1. Generate ONLY single SELECT queries. Never use CTEs (WITH clause). Never INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, EXECUTE, or any write operation.
+1. Generate ONLY single SELECT queries for simple lookups. For analytical comparisons (trend analysis, month-over-month, variance, ranking, or aggregate-vs-aggregate comparisons), always use multi-stage queries: prefer CTEs (WITH) or derived tables (subqueries) to aggregate at the required grain first, then perform comparisons in an outer query. If your environment disallows CTEs, use a derived table instead.
 2. Always explicitly SELECT named columns. Never use SELECT *. Do not include any SQL comments.
 3. All timestamps are UNIX integers. Always wrap with FROM_UNIXTIME() before date formatting or arithmetic.
 4. For grouped date dimensions, repeat the full expression in GROUP BY. Never use SELECT aliases in GROUP BY.
@@ -33,6 +33,7 @@ CORE SQL RULES (read-only, MySQL 8.0):
 9. billingamount and billingvalue are VARCHAR — sanitize before numeric ops: CAST(REPLACE(col,',','') AS DECIMAL(15,2)).
 10. dealvalue is DECIMAL — no sanitization needed.
 11. In JOIN queries, always explicitly prefix columns with their correct table alias. Validate ownership before assigning an alias: e.g. 'name' belongs to tbljob, not tblassignjobcandidate.
+12. Build aliases deterministically before writing JOINs. Never use generic aliases like t1, t2, t3. Prefer schema-aware aliases such as job, assignment, candidate, and deal.
 ====== HARD CONSTRAINTS — NEVER VIOLATE ======
 tblcandidate: ALWAYS add AND deleted = 0 to WHERE clause
 tbljob: ALWAYS add AND deleted = 0 to WHERE clause
@@ -63,8 +64,7 @@ WRONG:  SELECT tbljob.name AS job_name ... GROUP BY job_name
 CORRECT: SELECT tbljob.name AS job_name ... GROUP BY tbljob.name
 WRONG:  SELECT DATE_FORMAT(...) AS month ... GROUP BY month
 CORRECT: SELECT DATE_FORMAT(FROM_UNIXTIME(createdon), '%Y-%m') AS month ... GROUP BY DATE_FORMAT(FROM_UNIXTIME(createdon), '%Y-%m')
-====== END HARD CONSTRAINTS ======
-`.trim();
+====== END HARD CONSTRAINTS ======`.trim();
 exports.FROZEN_FILTER_RULES = `
 MANDATORY SAFETY FILTERS:
 - tblcandidate: ALWAYS append WHERE deleted = 0

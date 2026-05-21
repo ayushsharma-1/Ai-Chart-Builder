@@ -124,7 +124,12 @@ router.post('/:id/refresh', async (req: Request, res: Response) => {
       return res.status(404).json({ success: false, message: 'Chart not found.' });
     }
 
-    const result = await runQuery(chart.sql, [], { ttlSeconds: 0 });
+    const result = await runQuery(chart.sql, [], {
+      ttlSeconds: 0,
+      userPrompt: `Chart refresh: ${chart.title}`,
+      originalSql: chart.sql,
+      retryCount: 0,
+    });
 
     chart.dataSnapshot = result.data;
     chart.executionMetadata = {

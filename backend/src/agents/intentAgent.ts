@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import groq from '../config/groq';
+import { logAICall } from '../utils/aiMetricsLogger';
 import { buildFrozenIntentPrefix } from '../utils/promptTokens';
 
 // Zod schema for structured output validation
@@ -179,8 +180,14 @@ export function buildIntentFallback(userPrompt: string): IntentAnalysis {
 
 export async function analyzeIntent(
   userPrompt: string,
-  previousContext?: { previousPrompt?: string; previousTitle?: string }
+  previousContext?: { previousPrompt?: string; previousTitle?: string },
+  options?: { sessionId?: string }
 ): Promise<IntentAnalysis> {
+  const start = Date.now();
+  let usage: any;
+  let success = false;
+  let errorMessage: string | undefined;
+
   const parsedTimeRange = parseTimeRange(userPrompt);
   const contextLines: string[] = [];
 
@@ -200,40 +207,59 @@ export async function analyzeIntent(
   ].join('\n');
 
   // 3-second timeout to prevent pipeline stalls if intent agent hangs
-  const completion = await Promise.race([
-    groq.chat.completions.create({
+  try {
+    const completion = await Promise.race([
+      groq.chat.completions.create({
+        model: 'llama-3.3-70b-versatile',
+        messages: [
+          // FROZEN system prompt goes first — maximizes token cache hit rate
+          { role: 'system', content: [FROZEN_INTENT_SYSTEM, TABLE_HINTS].join('\n\n') },
+          { role: 'user', content: userMessage },
+        ],
+        temperature: 0.1,
+        max_tokens: 300,    // intent analysis is small
+        response_format: { type: 'json_object' },
+      }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Intent agent timeout (3s)')), 3000)
+      ),
+    ]);
+
+    usage = completion.usage;
+    const raw = completion.choices[0]?.message?.content;
+    if (!raw) throw new Error('Intent agent returned empty response');
+
+    // Parse JSON first (guaranteed by response_format)
+    const parsed = JSON.parse(raw);
+
+    // Then validate shape with Zod (catches missing/wrong-type fields)
+    const result = IntentAnalysisSchema.safeParse(parsed);
+
+    if (!result.success) {
+      console.warn('[IntentAgent] Zod validation failed, using fallback:', result.error.flatten());
+      success = true;
+      return buildIntentFallback(userPrompt);
+    }
+
+    success = true;
+    return {
+      ...result.data,
+      timeRange: result.data.timeRange ?? parsedTimeRange?.normalizedTimeRange ?? null,
+      normalizedTimeRange: parsedTimeRange?.normalizedTimeRange || result.data.normalizedTimeRange || null,
+    };
+  } catch (err: any) {
+    errorMessage = err?.message || String(err);
+    throw err;
+  } finally {
+    logAICall({
+      callType: 'intent_analysis',
       model: 'llama-3.3-70b-versatile',
-      messages: [
-        // FROZEN system prompt goes first — maximizes token cache hit rate
-        { role: 'system', content: [FROZEN_INTENT_SYSTEM, TABLE_HINTS].join('\n\n') },
-        { role: 'user', content: userMessage },
-      ],
-      temperature: 0.1,
-      max_tokens: 300,    // intent analysis is small
-      response_format: { type: 'json_object' },
-    }),
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Intent agent timeout (3s)')), 3000)
-    ),
-  ]);
-
-  const raw = completion.choices[0]?.message?.content;
-  if (!raw) throw new Error('Intent agent returned empty response');
-
-  // Parse JSON first (guaranteed by response_format)
-  const parsed = JSON.parse(raw);
-
-  // Then validate shape with Zod (catches missing/wrong-type fields)
-  const result = IntentAnalysisSchema.safeParse(parsed);
-
-  if (!result.success) {
-    console.warn('[IntentAgent] Zod validation failed, using fallback:', result.error.flatten());
-    return buildIntentFallback(userPrompt);
+      sessionId: options?.sessionId,
+      userPrompt,
+      success,
+      errorMessage,
+      latencyMs: Date.now() - start,
+      usage,
+    });
   }
-
-  return {
-    ...result.data,
-    timeRange: result.data.timeRange ?? parsedTimeRange?.normalizedTimeRange ?? null,
-    normalizedTimeRange: parsedTimeRange?.normalizedTimeRange || result.data.normalizedTimeRange || null,
-  };
 }

@@ -1,6 +1,13 @@
-import { SCHEMA_COLUMN_MAP } from './dataModel';
+import { Parser, AST, Select } from 'node-sql-parser';
 
-const ALLOWED_TABLES = new Set(['tblcandidate', 'tblassignjobcandidate', 'tbldeals', 'tbljob']);
+const parser = new Parser();
+
+const ALLOWED_TABLES = new Set([
+  'tblcandidate',
+  'tblassignjobcandidate',
+  'tbldeals',
+  'tbljob',
+]);
 
 const MAX_ROWS = 10000;
 export const QUERY_TIMEOUT_MS = 10000;
@@ -22,34 +29,21 @@ export interface SemanticAliasRewriteResult {
   rewrittenAliases: string[];
 }
 
-const FORBIDDEN_STATEMENTS = [
-  'INSERT',
-  'UPDATE',
-  'DELETE',
-  'DROP',
-  'TRUNCATE',
-  'ALTER',
-  'CREATE',
-  'RENAME',
-  'MERGE',
-  'CALL',
-  'EXEC',
-  'EXECUTE',
-  'GRANT',
-  'REVOKE',
-  'LOCK',
-  'UNLOCK',
-  'FLUSH',
-  'RESET',
-  'PURGE',
-  'OPTIMIZE',
-  'REPAIR',
-  'ANALYZE TABLE',
-  'PREPARE',
-  'DEALLOCATE PREPARE',
+const FORBIDDEN_OUTPUT_CLAUSES = ['INTO OUTFILE', 'INTO DUMPFILE'];
+const FORBIDDEN_SYSTEM_REFS = [
+  '@@datadir',
+  '@@basedir',
+  '@@secure_file_priv',
+  '@@global',
+  '@@session',
+  'information_schema',
+  'performance_schema',
+  'mysql.user',
+  'mysql.db',
 ];
+const FORBIDDEN_PII_COLUMNS = ['emailid', 'contactnumber', 'formatted_contact_number'];
 
-const FORBIDDEN_FUNCTIONS = [
+const FORBIDDEN_FUNCTION_NAMES = new Set([
   'LOAD_FILE',
   'SLEEP',
   'BENCHMARK',
@@ -58,231 +52,371 @@ const FORBIDDEN_FUNCTIONS = [
   'IS_FREE_LOCK',
   'IS_USED_LOCK',
   'MASTER_POS_WAIT',
-  'PROCEDURE ANALYSE',
   'CURRENT_USER',
   'SESSION_USER',
   'SYSTEM_USER',
-  'USER',
-  'DATABASE',
-  'VERSION',
-];
+]);
 
-const FORBIDDEN_SYSTEM_REFERENCES = ['@@datadir', '@@basedir', '@@secure_file_priv', '@@global', '@@session'];
-const FORBIDDEN_OUTPUT_CLAUSES = ['INTO OUTFILE', 'INTO DUMPFILE'];
-const FORBIDDEN_COLUMNS = ['emailid', 'contactnumber', 'formatted_contact_number'];
 const RESERVED_ALIAS_REWRITE_MAP = new Map([
   ['rank', 'row_rank'],
   ['group', 'group_name'],
   ['order', 'sort_order'],
 ]);
-const RESERVED_ALIAS_BLOCKLIST = new Set(['rank', 'group', 'order', 'key', 'index', 'table', 'rows']);
-const CLAUSE_KEYWORDS = new Set([
-  'where',
+
+const RESERVED_ALIAS_BLOCKLIST = new Set([
+  'rank',
   'group',
-  'having',
   'order',
-  'limit',
-  'on',
-  'join',
-  'inner',
-  'left',
-  'right',
-  'full',
-  'cross',
-  'using',
-  'union',
-  'from',
-  'select',
-  'as',
+  'key',
+  'index',
+  'table',
+  'rows',
 ]);
 
-function startsWithSelect(sql: string) {
-  return /^\s*SELECT\b/i.test(sql);
+function normalizeName(value: unknown): string {
+  return typeof value === 'string' ? value.toLowerCase() : '';
 }
 
-function tokenize(sql: string) {
-  return sql.toUpperCase().match(/[A-Z_]+/g) || [];
+function normalizeTableName(value: unknown): string {
+  return normalizeName(value).split('.').pop() || '';
 }
 
-function containsTokenSequence(tokens: string[], phrase: string) {
-  const expected = phrase.toUpperCase().split(/\s+/).filter(Boolean);
+function collectNodes(node: any, targetType: string, results: any[] = []): any[] {
+  if (!node || typeof node !== 'object') return results;
 
-  if (expected.length === 0 || tokens.length < expected.length) {
-    return false;
+  if (node.type === targetType) results.push(node);
+
+  for (const key of Object.keys(node)) {
+    const child = node[key];
+    if (Array.isArray(child)) {
+      child.forEach((item) => collectNodes(item, targetType, results));
+    } else if (child && typeof child === 'object') {
+      collectNodes(child, targetType, results);
+    }
   }
 
-  for (let index = 0; index <= tokens.length - expected.length; index += 1) {
-    let matched = true;
+  return results;
+}
 
-    for (let offset = 0; offset < expected.length; offset += 1) {
-      if (tokens[index + offset] !== expected[offset]) {
-        matched = false;
-        break;
+function collectFunctions(node: any, results: any[] = []): any[] {
+  if (!node || typeof node !== 'object') return results;
+
+  if (node.type === 'function' || node.type === 'aggr_func') results.push(node);
+
+  for (const key of Object.keys(node)) {
+    const child = node[key];
+    if (Array.isArray(child)) {
+      child.forEach((item) => collectFunctions(item, results));
+    } else if (child && typeof child === 'object') {
+      collectFunctions(child, results);
+    }
+  }
+
+  return results;
+}
+
+function collectColumnRefs(node: any, results: Array<{ table: string | null; column: string }> = []): typeof results {
+  if (!node || typeof node !== 'object') return results;
+
+  if (node.type === 'column_ref') {
+    results.push({
+      table: node.table ? normalizeName(node.table) : null,
+      column: node.column ? normalizeName(node.column) : '',
+    });
+    return results;
+  }
+
+  for (const key of Object.keys(node)) {
+    const child = node[key];
+    if (Array.isArray(child)) {
+      child.forEach((item) => collectColumnRefs(item, results));
+    } else if (child && typeof child === 'object') {
+      collectColumnRefs(child, results);
+    }
+  }
+
+  return results;
+}
+
+function collectCteNames(ast: any): string[] {
+  const withClause = ast?.with;
+  if (!withClause) return [];
+
+  const items = Array.isArray(withClause) ? withClause : [withClause];
+  const names: string[] = [];
+
+  for (const item of items) {
+    const rawName = item?.name?.value ?? item?.name ?? item?.alias ?? item?.cte?.name;
+    const normalized = normalizeName(rawName);
+    if (normalized) names.push(normalized);
+  }
+
+  return names;
+}
+
+function collectTableNames(ast: Select, scopeCteNames: Set<string> = new Set()): string[] {
+  const names: string[] = [];
+
+  const addFromItems = (fromItems: any[]) => {
+    if (!Array.isArray(fromItems)) return;
+
+    for (const item of fromItems) {
+      const tableName = normalizeTableName(item?.table);
+      if (tableName && !scopeCteNames.has(tableName)) {
+        names.push(tableName);
+      }
+
+      const nestedSelect = item?.expr?.ast || (item?.expr?.type === 'select' ? item.expr : null);
+      if (nestedSelect) {
+        names.push(...collectTableNames(nestedSelect as Select, scopeCteNames));
       }
     }
+  };
 
-    if (matched) {
-      return true;
+  const fromItems = Array.isArray(ast.from) ? ast.from : ast.from ? [ast.from] : [];
+  addFromItems(fromItems);
+
+  return names;
+}
+
+function getGroupByExpressions(groupBy: any): any[] {
+  if (!groupBy) return [];
+  if (Array.isArray(groupBy)) return groupBy;
+  if (Array.isArray(groupBy.columns)) return groupBy.columns;
+  if (groupBy.columns) return [groupBy.columns];
+  return [groupBy];
+}
+
+function expressionContainsAggregate(expr: any): boolean {
+  if (!expr || typeof expr !== 'object') return false;
+
+  if (expr.type === 'aggr_func') return true;
+
+  for (const key of Object.keys(expr)) {
+    const child = expr[key];
+    if (Array.isArray(child)) {
+      if (child.some((item) => expressionContainsAggregate(item))) return true;
+    } else if (child && typeof child === 'object') {
+      if (expressionContainsAggregate(child)) return true;
     }
   }
 
   return false;
 }
 
-function containsForbiddenStatement(sql: string) {
-  const tokens = tokenize(sql);
+function rewriteIdentifiers(node: any, aliasMap: Record<string, string>, rewrittenAliases: Set<string>): void {
+  if (!node || typeof node !== 'object') return;
 
-  return FORBIDDEN_STATEMENTS.find((statement) => containsTokenSequence(tokens, statement));
-}
-
-function containsForbiddenFunction(sql: string) {
-  const normalized = sql.toUpperCase().replace(/\s+/g, ' ');
-
-  return FORBIDDEN_FUNCTIONS.find((fn) => normalized.includes(`${fn.toUpperCase()}(`));
-}
-
-function containsForbiddenSystemReference(sql: string) {
-  return FORBIDDEN_SYSTEM_REFERENCES.find((ref) => sql.toUpperCase().includes(ref.toUpperCase()));
-}
-
-function containsForbiddenOutputClause(sql: string) {
-  const normalized = sql.toUpperCase().replace(/\s+/g, ' ');
-
-  return FORBIDDEN_OUTPUT_CLAUSES.find((clause) => normalized.includes(clause.toUpperCase()));
-}
-
-function extractTableNames(sql: string) {
-  const tableRegex = /\b(?:FROM|JOIN)\s+([\w.]+)/gi;
-  const tables: string[] = [];
-  let match: RegExpExecArray | null;
-
-  while ((match = tableRegex.exec(sql)) !== null) {
-    const tableName = (match[1] || '').toLowerCase().split('.').pop() || '';
-    if (tableName) {
-      tables.push(tableName);
-    }
-  }
-
-  return tables;
-}
-
-function findInvalidQualifiedColumnReference(sql: string): string | null {
-  for (const branch of splitUnionAllBranches(sql)) {
-    const aliasMap = extractTableAliasMap(branch);
-    const qualifiedReferences = extractQualifiedColumnReferences(branch);
-
-    for (const reference of qualifiedReferences) {
-      const resolvedTable = aliasMap[reference.identifier.toLowerCase()] || reference.identifier.toLowerCase();
-      const allowedColumns = SCHEMA_COLUMN_MAP.get(resolvedTable);
-
-      if (!allowedColumns) {
-        continue;
+  if (node.type === 'column_ref') {
+    if (node.table) {
+      const tableKey = normalizeName(node.table);
+      const tableReplacement = aliasMap[tableKey];
+      if (tableReplacement) {
+        rewrittenAliases.add(tableKey);
+        node.table = tableReplacement;
       }
+    }
 
-      if (!allowedColumns.has(reference.column.toLowerCase())) {
-        return `Column '${reference.column}' does not exist on table '${resolvedTable}'.`;
+    if (node.column) {
+      const columnKey = normalizeName(node.column);
+      const columnReplacement = aliasMap[columnKey];
+      if (columnReplacement) {
+        rewrittenAliases.add(columnKey);
+        node.column = columnReplacement;
       }
     }
   }
 
-  return null;
-}
-
-function extractTableAliasMap(sql: string): Record<string, string> {
-  const aliasMap: Record<string, string> = {};
-  const tableAliasRegex = /\b(?:FROM|JOIN)\s+((?:\w+(?:\.\w+)*)|(?:\([^)]*\)))\s+(?:AS\s+)?(\w+)\b/gi;
-  let match: RegExpExecArray | null;
-
-  while ((match = tableAliasRegex.exec(sql)) !== null) {
-    const tableName = (match[1] || '').toLowerCase().split('.').pop() || '';
-    const alias = (match[2] || '').toLowerCase();
-
-    if (tableName && alias && !CLAUSE_KEYWORDS.has(alias)) {
-      aliasMap[alias] = tableName;
+  if (Array.isArray(node.columns)) {
+    for (const column of node.columns) {
+      if (column?.as) {
+        const aliasKey = normalizeName(column.as);
+        const replacement = aliasMap[aliasKey];
+        if (replacement) {
+          rewrittenAliases.add(aliasKey);
+          column.as = replacement;
+        }
+      }
     }
   }
 
-  return aliasMap;
-}
-
-function extractQualifiedColumnReferences(sql: string): Array<{ identifier: string; column: string }> {
-  const references: Array<{ identifier: string; column: string }> = [];
-  const regex = /\b(\w+)\.(\w+)\b/g;
-  let match: RegExpExecArray | null;
-
-  while ((match = regex.exec(sql)) !== null) {
-    references.push({ identifier: match[1], column: match[2] });
-  }
-
-  return references;
-}
-
-function extractGroupByClause(sql: string): string | null {
-  const match = /\bGROUP\s+BY\b([\s\S]*?)(?=\bHAVING\b|\bORDER\s+BY\b|\bLIMIT\b|\bUNION\b|$)/i.exec(sql);
-  return match ? match[1] : null;
-}
-
-function hasAggregateInGroupBy(sql: string): boolean {
-  for (const branch of splitUnionAllBranches(sql)) {
-    const clause = extractGroupByClause(branch);
-    if (!clause) continue;
-
-    if (/\b(COUNT|SUM|AVG|MIN|MAX)\s*\(/i.test(clause)) {
-      return true;
+  if (Array.isArray(node.from)) {
+    for (const fromItem of node.from) {
+      if (fromItem?.as) {
+        const aliasKey = normalizeName(fromItem.as);
+        const replacement = aliasMap[aliasKey];
+        if (replacement) {
+          rewrittenAliases.add(aliasKey);
+          fromItem.as = replacement;
+        }
+      }
     }
   }
 
-  return false;
+  for (const key of Object.keys(node)) {
+    const child = node[key];
+    if (Array.isArray(child)) {
+      child.forEach((item) => rewriteIdentifiers(item, aliasMap, rewrittenAliases));
+    } else if (child && typeof child === 'object') {
+      rewriteIdentifiers(child, aliasMap, rewrittenAliases);
+    }
+  }
 }
 
-function hasNestedAggregateMisuse(sql: string): string | null {
-  const nestedAggPattern = /\b(COUNT|SUM|AVG|MIN|MAX)\s*\([^)]*\b(COUNT|SUM|AVG|MIN|MAX)\s*\(/i;
-  if (nestedAggPattern.test(sql)) {
-    return 'Nested aggregate functions detected (e.g., SUM(COUNT(...))). Use multi-stage aggregation (CTE or derived table).';
+function collectAliasCandidates(ast: any): string[] {
+  const candidates = new Set<string>();
+
+  for (const selectNode of [ast, ...collectNodes(ast, 'select').filter((node) => node !== ast)]) {
+    for (const column of selectNode?.columns || []) {
+      const alias = normalizeName(column?.as);
+      if (alias && RESERVED_ALIAS_REWRITE_MAP.has(alias)) {
+        candidates.add(alias);
+      }
+    }
+
+    for (const fromItem of selectNode?.from || []) {
+      const alias = normalizeName(fromItem?.as);
+      if (alias && RESERVED_ALIAS_REWRITE_MAP.has(alias)) {
+        candidates.add(alias);
+      }
+    }
+  }
+
+  return [...candidates];
+}
+
+function collectBlockedAliasUsage(ast: any): string[] {
+  const blocked = new Set<string>();
+
+  for (const selectNode of [ast, ...collectNodes(ast, 'select').filter((node) => node !== ast)]) {
+    for (const column of selectNode?.columns || []) {
+      const alias = normalizeName(column?.as);
+      if (alias && RESERVED_ALIAS_BLOCKLIST.has(alias)) {
+        blocked.add(alias);
+      }
+    }
+
+    for (const fromItem of selectNode?.from || []) {
+      const alias = normalizeName(fromItem?.as);
+      if (alias && RESERVED_ALIAS_BLOCKLIST.has(alias)) {
+        blocked.add(alias);
+      }
+    }
+  }
+
+  return [...blocked];
+}
+
+function preParseChecks(sql: string): string | null {
+  const upper = sql.toUpperCase();
+
+  if (!/^\s*(WITH\b|SELECT\b)/i.test(sql)) {
+    return 'Only SELECT queries are allowed.';
+  }
+
+  for (const clause of FORBIDDEN_OUTPUT_CLAUSES) {
+    if (upper.includes(clause)) return 'Only SELECT queries are allowed.';
+  }
+
+  for (const ref of FORBIDDEN_SYSTEM_REFS) {
+    if (upper.includes(ref.toUpperCase())) return 'Query contains a disallowed reference.';
+  }
+
+  if (/--|\/\*|\*\//.test(sql)) return 'SQL comments are not allowed.';
+
+  const withoutTrail = sql.trim().replace(/;\s*$/, '');
+  if (withoutTrail.includes(';')) return 'Only single SELECT queries are allowed.';
+
+  return null;
+}
+
+function validateAst(ast: Select): string | null {
+  const scopeCtes = new Set(collectCteNames(ast));
+
+  const tableNames = collectTableNames(ast, scopeCtes);
+  for (const tableName of tableNames) {
+    if (!ALLOWED_TABLES.has(tableName)) {
+      return 'Query references a data source that is not available.';
+    }
+  }
+
+  const selectColumns = collectColumnRefs({ columns: ast.columns });
+  for (const ref of selectColumns) {
+    if (FORBIDDEN_PII_COLUMNS.includes(ref.column)) {
+      return 'Query requests restricted data fields.';
+    }
+  }
+
+  const allFunctions = collectFunctions(ast);
+  for (const fn of allFunctions) {
+    const fnName = normalizeName(fn.name).toUpperCase();
+    if (FORBIDDEN_FUNCTION_NAMES.has(fnName)) {
+      return 'Query contains a disallowed function.';
+    }
+  }
+
+  const groupByExpressions = getGroupByExpressions(ast.groupby);
+  for (const groupExpr of groupByExpressions) {
+    if (expressionContainsAggregate(groupExpr)) {
+      return 'GROUP BY clause cannot contain aggregate functions. Use HAVING for aggregate conditions.';
+    }
+  }
+
+  const subqueryNodes = collectNodes(ast, 'select');
+  for (const sub of subqueryNodes) {
+    if (sub === ast) continue;
+    const subError = validateAst(sub as Select);
+    if (subError) return subError;
   }
 
   return null;
 }
 
-function hasSuspiciousSingleLayerMoM(sql: string): string | null {
-  // Heuristic: look for expressions comparing aggregates across shifted time buckets without a derived table
-  const momPattern = new RegExp(String.raw`\b(AVG|SUM|COUNT)\s*\([^)]*\)\s*[-/]\s*\b(AVG|SUM|COUNT)\s*\([^)]*\)`, 'i');
-  const hasWith = /\bWITH\b/i.test(sql);
-  const hasDerived = /\bFROM\s*\(\s*SELECT\b/i.test(sql);
+export function validateSql(sql: string): SqlGuardResult {
+  const trimmed = sql.trim().replace(/;\s*$/, '');
 
-  if (momPattern.test(sql) && !hasWith && !hasDerived) {
-    return 'Potential single-layer month-over-month or aggregate-vs-aggregate comparison detected. Use multi-stage aggregation (CTE or derived table) to compute base aggregates before comparison.';
+  const preError = preParseChecks(trimmed);
+  if (preError) return { safe: false, reason: preError };
+
+  let ast: any;
+  try {
+    const result = parser.astify(trimmed, { database: 'MySQL' });
+    ast = Array.isArray(result) ? result[0] : result;
+  } catch (parseError: any) {
+    console.warn('[sqlGuard] AST parse failed:', parseError?.message || parseError);
+    return { safe: false, reason: 'Query contains invalid SQL syntax.' };
   }
 
-  return null;
-}
+  if (ast?.type?.toLowerCase() !== 'select') {
+    return { safe: false, reason: 'Only SELECT queries are allowed.' };
+  }
 
-function hasComments(sql: string) {
-  return /--|\/\*|\*\/|#/m.test(sql);
-}
+  const astError = validateAst(ast as Select);
+  if (astError) return { safe: false, reason: astError };
 
-function extractSelectClause(sql: string): string {
-  const match = /select([\s\S]*?)from/i.exec(sql);
-  return match ? match[1] : '';
+  let sanitizedSql = trimmed;
+  if (!ast.limit) {
+    sanitizedSql += ` LIMIT ${MAX_ROWS}`;
+  }
+
+  return { safe: true, sanitizedSql };
 }
 
 export function normalizeReservedAliases(sql: string): ReservedAliasNormalizationResult {
-  const aliasCandidates = new Set<string>();
+  let ast: any;
+  try {
+    const result = parser.astify(sql.trim().replace(/;\s*$/, ''), { database: 'MySQL' });
+    ast = Array.isArray(result) ? result[0] : result;
+  } catch {
+    return { sql, aliasMap: {}, rewrittenAliases: [] };
+  }
 
-  for (const branch of splitUnionAllBranches(sql)) {
-    const selectClause = extractSelectClause(branch);
-
-    for (const alias of extractAliasesFromSelectClause(selectClause)) {
-      aliasCandidates.add(alias);
-    }
-
-    for (const alias of extractTableAliases(branch)) {
-      aliasCandidates.add(alias);
-    }
+  if (!ast?.columns && !ast?.from) {
+    return { sql, aliasMap: {}, rewrittenAliases: [] };
   }
 
   const aliasMap: Record<string, string> = {};
-  for (const alias of aliasCandidates) {
+  for (const alias of collectAliasCandidates(ast)) {
     const replacement = RESERVED_ALIAS_REWRITE_MAP.get(alias);
     if (replacement) {
       aliasMap[alias] = replacement;
@@ -294,25 +428,41 @@ export function normalizeReservedAliases(sql: string): ReservedAliasNormalizatio
   }
 
   const rewrittenAliases = new Set<string>();
-  const rewrittenSql = rewriteAliasesOutsideQuotes(sql, aliasMap, rewrittenAliases);
+  rewriteIdentifiers(ast, aliasMap, rewrittenAliases);
 
-  return {
-    sql: rewrittenSql,
-    aliasMap,
-    rewrittenAliases: [...rewrittenAliases],
-  };
+  try {
+    const rewrittenSql = parser.sqlify(ast, { database: 'MySQL' });
+    return { sql: rewrittenSql, aliasMap, rewrittenAliases: [...rewrittenAliases] };
+  } catch {
+    return { sql, aliasMap, rewrittenAliases: [] };
+  }
 }
 
 export function rewriteSemanticAliases(sql: string, semanticAliasPlan: Record<string, string>): SemanticAliasRewriteResult {
+  let ast: any;
+  try {
+    const result = parser.astify(sql.trim().replace(/;\s*$/, ''), { database: 'MySQL' });
+    ast = Array.isArray(result) ? result[0] : result;
+  } catch {
+    return { sql, rewrittenAliases: [] };
+  }
+
+  if (!ast) {
+    return { sql, rewrittenAliases: [] };
+  }
+
   const aliasMap: Record<string, string> = {};
 
-  for (const branch of splitUnionAllBranches(sql)) {
-    const branchAliasMap = extractTableAliasMap(branch);
+  for (const selectNode of [ast, ...collectNodes(ast, 'select').filter((node) => node !== ast)]) {
+    for (const fromItem of selectNode?.from || []) {
+      const tableName = normalizeTableName(fromItem?.table);
+      const desiredAlias = semanticAliasPlan[tableName];
+      if (!desiredAlias) continue;
 
-    for (const [alias, tableName] of Object.entries(branchAliasMap)) {
-      const desiredAlias = semanticAliasPlan[tableName.toLowerCase()];
-      if (desiredAlias && desiredAlias.toLowerCase() !== alias.toLowerCase()) {
-        aliasMap[alias.toLowerCase()] = desiredAlias;
+      const currentAlias = normalizeName(fromItem?.as) || tableName;
+      if (currentAlias && currentAlias !== desiredAlias.toLowerCase()) {
+        aliasMap[currentAlias] = desiredAlias;
+        fromItem.as = desiredAlias;
       }
     }
   }
@@ -322,372 +472,217 @@ export function rewriteSemanticAliases(sql: string, semanticAliasPlan: Record<st
   }
 
   const rewrittenAliases = new Set<string>();
-  const rewrittenSql = rewriteAliasesOutsideQuotes(sql, aliasMap, rewrittenAliases);
+  rewriteIdentifiers(ast, aliasMap, rewrittenAliases);
 
-  return {
-    sql: rewrittenSql,
-    rewrittenAliases: [...rewrittenAliases],
-  };
+  try {
+    const rewrittenSql = parser.sqlify(ast, { database: 'MySQL' });
+    return { sql: rewrittenSql, rewrittenAliases: [...rewrittenAliases] };
+  } catch {
+    return { sql, rewrittenAliases: [] };
+  }
 }
 
-export function validateSql(sql: string): SqlGuardResult {
-  const trimmed = sql.trim().replace(/;\s*$/, '');
-  return validateSqlCore(trimmed, normalizeReservedAliases(trimmed).sql);
+export function checkReservedAliasUsage(sql: string): string[] {
+  let ast: any;
+  try {
+    const result = parser.astify(sql.trim().replace(/;\s*$/, ''), { database: 'MySQL' });
+    ast = Array.isArray(result) ? result[0] : result;
+  } catch {
+    return [];
+  }
+
+  if (!ast) return [];
+
+  return collectBlockedAliasUsage(ast);
 }
 
-function validateSqlCore(trimmed: string, normalizedSql: string): SqlGuardResult {
-  if (!startsWithSelect(trimmed)) {
-    return { safe: false, reason: 'Only SELECT queries are allowed.' };
+export function getColumnRefsFromSql(sql: string): Array<{ table: string | null; column: string }> {
+  const trimmed = String(sql || '').trim().replace(/;\s*$/, '');
+  let ast: any;
+  try {
+    const result = parser.astify(trimmed, { database: 'MySQL' });
+    ast = Array.isArray(result) ? result[0] : result;
+  } catch {
+    return [];
   }
 
-  const validationReason = validateSqlRules(trimmed, normalizedSql);
-  if (validationReason) {
-    return { safe: false, reason: validationReason };
-  }
-
-  return { safe: true, sanitizedSql: appendLimitIfMissing(normalizedSql) };
+  return collectColumnRefs(ast as any, []);
 }
 
-function validateSqlRules(trimmed: string, normalizedSql: string): string | null {
-  const forbiddenStatement = containsForbiddenStatement(trimmed);
-  if (forbiddenStatement) {
-    return `Query contains forbidden statement: ${forbiddenStatement}`;
-  }
-
-  const forbiddenOutputClause = containsForbiddenOutputClause(trimmed);
-  if (forbiddenOutputClause) {
-    return `Query contains forbidden clause: ${forbiddenOutputClause}`;
-  }
-
-  const forbiddenFunction = containsForbiddenFunction(trimmed);
-  if (forbiddenFunction) {
-    return `Query contains forbidden function: ${forbiddenFunction}`;
-  }
-
-  if (containsForbiddenSystemReference(trimmed)) {
-    return 'Query contains a disallowed system reference.';
-  }
-
-  if (hasComments(trimmed)) {
-    return 'SQL comments are not allowed.';
-  }
-
-  const reservedAliasUsage = findReservedAliasUsage(normalizedSql);
-  if (reservedAliasUsage.length > 0) {
-    return `Query uses reserved aliases that are not allowed: ${reservedAliasUsage.join(', ')}.`;
-  }
-
-  const forbiddenColCheck = checkForbiddenColumns(normalizedSql);
-  if (forbiddenColCheck) return forbiddenColCheck;
-
-  const refTableCheck = checkReferencedTables(normalizedSql);
-  if (refTableCheck) return refTableCheck;
-
-  const invalidQualifiedColumn = findInvalidQualifiedColumnReference(normalizedSql);
-  if (invalidQualifiedColumn) {
-    return invalidQualifiedColumn;
-  }
-
-  const nestedAggError = hasNestedAggregateMisuse(normalizedSql);
-  if (nestedAggError) {
-    return nestedAggError;
-  }
-
-  const momError = hasSuspiciousSingleLayerMoM(normalizedSql);
-  if (momError) {
-    return momError;
-  }
-
-  if (hasAggregateInGroupBy(normalizedSql)) {
-    return 'GROUP BY clause must not contain aggregate functions (COUNT, SUM, AVG, MIN, MAX). Remove aggregate expressions from GROUP BY.';
-  }
-
-  if (normalizedSql.includes(';')) {
-    return 'Stacked queries are not allowed.';
-  }
-
-  return null;
-}
-
-function appendLimitIfMissing(sql: string): string {
-  if (/\bLIMIT\b/i.test(sql)) {
-    return sql;
-  }
-
-  return `${sql} LIMIT ${MAX_ROWS}`;
-}
-
-function findReservedAliasUsage(sql: string): string[] {
-  const usages = new Set<string>();
-
-  for (const branch of splitUnionAllBranches(sql)) {
-    const selectClause = extractSelectClause(branch);
-
-    for (const alias of extractAliasesFromSelectClause(selectClause)) {
-      if (RESERVED_ALIAS_BLOCKLIST.has(alias)) {
-        usages.add(alias);
-      }
-    }
-
-    for (const alias of extractTableAliases(branch)) {
-      if (RESERVED_ALIAS_BLOCKLIST.has(alias)) {
-        usages.add(alias);
-      }
-    }
-  }
-
-  return [...usages];
-}
-
-function extractAliasesFromSelectClause(selectClause: string): string[] {
-  const aliases: string[] = [];
-
-  for (const item of splitTopLevelCommaSeparated(selectClause)) {
-    const trimmedItem = item.trim();
-    if (!trimmedItem || !/\s/.test(trimmedItem)) {
-      continue;
-    }
-
-    const explicitMatch =
-      /\bAS\s+(\w+)\s*$/i.exec(trimmedItem) ||
-      /\bAS\s+`(\w+)`\s*$/i.exec(trimmedItem) ||
-      /\bAS\s+"(\w+)"\s*$/i.exec(trimmedItem);
-
-    if (explicitMatch?.[1]) {
-      aliases.push(explicitMatch[1].toLowerCase());
-      continue;
-    }
-
-    const implicitMatch =
-      /(\w+)\s*$/i.exec(trimmedItem) ||
-      /`(\w+)`\s*$/i.exec(trimmedItem) ||
-      /"(\w+)"\s*$/i.exec(trimmedItem);
-
-    if (implicitMatch?.[1]) {
-      aliases.push(implicitMatch[1].toLowerCase());
-    }
-  }
-
-  return aliases;
-}
-
-function extractTableAliases(sql: string): string[] {
-  const aliases: string[] = [];
-  const tableAliasRegex = /\b(?:FROM|JOIN)\s+(?:\([\s\S]*?\)|(?:\w+(?:\.\w+)*))(?:\s+AS)?\s+(\w+)\b/gi;
-  let match: RegExpExecArray | null;
-
-  while ((match = tableAliasRegex.exec(sql)) !== null) {
-    const alias = (match[1] || '').toLowerCase();
-    if (alias && !CLAUSE_KEYWORDS.has(alias)) {
-      aliases.push(alias);
-    }
-  }
-
-  return aliases;
-}
-
-function splitTopLevelCommaSeparated(input: string): string[] {
-  const parts: string[] = [];
-  let current = '';
-  let depth = 0;
-  let index = 0;
-
-  while (index < input.length) {
-    const char = input[index];
-
-    if (char === '\'' || char === '"' || char === '`') {
-      const quoted = readQuotedSection(input, index, char);
-      current += quoted.text;
-      index = quoted.nextIndex;
-      continue;
-    }
-
-    if (char === '(') {
-      depth += 1;
-      current += char;
-      index += 1;
-      continue;
-    }
-
-    if (char === ')') {
-      depth = Math.max(0, depth - 1);
-      current += char;
-      index += 1;
-      continue;
-    }
-
-    if (char === ',' && depth === 0) {
-      parts.push(current);
-      current = '';
-      index += 1;
-      continue;
-    }
-
-    current += char;
-    index += 1;
-  }
-
-  if (current) {
-    parts.push(current);
-  }
-
-  return parts;
-}
-
-function splitUnionAllBranches(sql: string): string[] {
-  const branches: string[] = [];
-  const parts = sql.split(/\bUNION\s+ALL\b/i);
-  for (const part of parts) {
-    const trimmed = part.trim().replace(/^\(+/, '').replace(/\)+$/, '');
-    if (trimmed) {
-      branches.push(trimmed);
-    }
-  }
-
-  return branches.length > 0 ? branches : [sql];
-}
-
-function rewriteAliasesOutsideQuotes(sql: string, aliasMap: Record<string, string>, rewrittenAliases: Set<string>): string {
-  let result = '';
-  let index = 0;
-
-  while (index < sql.length) {
-    const char = sql[index];
-
-    if (char === '\'' || char === '"' || char === '`') {
-      const quoted = readQuotedSection(sql, index, char);
-      result += quoted.text;
-      index = quoted.nextIndex;
-      continue;
-    }
-
-    if (/[A-Za-z_]/.test(char)) {
-      const start = index;
-      index += 1;
-
-      while (index < sql.length && /[A-Za-z0-9_$]/.test(sql[index])) {
-        index += 1;
-      }
-
-      const token = sql.slice(start, index);
-      const lowerToken = token.toLowerCase();
-      const replacement = aliasMap[lowerToken];
-
-      if (replacement && !isClauseKeywordToken(sql, start, index, lowerToken) && !isFunctionCall(sql, index) && getPreviousNonWhitespaceChar(sql, start) !== '.') {
-        rewrittenAliases.add(lowerToken);
-        result += replacement;
-        continue;
-      }
-
-      result += token;
-      continue;
-    }
-
-    result += char;
-    index += 1;
-  }
-
-  return result;
-}
-
-function readQuotedSection(sql: string, startIndex: number, quote: string): { text: string; nextIndex: number } {
-  let index = startIndex + 1;
-
-  while (index < sql.length) {
-    if (sql[index] === '\\' && quote !== '`') {
-      index += 2;
-      continue;
-    }
-
-    if (sql[index] === quote) {
-      if (quote === '`' || sql[index + 1] !== quote) {
-        index += 1;
-        break;
-      }
-
-      index += 2;
-      continue;
-    }
-
-    index += 1;
-  }
-
-  return {
-    text: sql.slice(startIndex, index),
-    nextIndex: index,
-  };
-}
-
-function getPreviousNonWhitespaceChar(sql: string, index: number): string | null {
-  for (let position = index - 1; position >= 0; position -= 1) {
-    const char = sql[position];
-    if (!/\s/.test(char)) {
-      return char;
-    }
-  }
-
-  return null;
-}
-
-function getNextNonWhitespaceChar(sql: string, index: number): string | null {
-  for (let position = index; position < sql.length; position += 1) {
-    const char = sql[position];
-    if (!/\s/.test(char)) {
-      return char;
-    }
-  }
-
-  return null;
-}
-
-function getNextWord(sql: string, index: number): string | null {
-  let position = index;
-
-  while (position < sql.length && /\s/.test(sql[position])) {
-    position += 1;
-  }
-
-  const start = position;
-
-  while (position < sql.length && /[A-Za-z_]/.test(sql[position])) {
-    position += 1;
-  }
-
-  if (position === start) {
+export function validateSqlForOnlyFullGroupBy(sql: string): string | null {
+  if (!sql || typeof sql !== 'string') return null;
+
+  let ast: any;
+  try {
+    const result = parser.astify(sql.trim().replace(/;\s*$/, ''), { database: 'MySQL' });
+    ast = Array.isArray(result) ? result[0] : result;
+  } catch {
     return null;
   }
 
-  return sql.slice(start, position).toLowerCase();
+  const selectNodes = [ast, ...collectNodes(ast, 'select').filter((n) => n !== ast)];
+
+  for (const selectNode of selectNodes) {
+    const columns = selectNode?.columns || [];
+    const groupByExprs = getGroupByExpressions(selectNode?.groupby || selectNode?.groupBy || null);
+
+    // Detect aggregates in select list
+    let hasAggregateInSelect = false;
+    let nonAggregateCount = 0;
+
+    for (const col of columns) {
+      const expr = col?.expr ?? col;
+      if (expressionContainsAggregate(expr)) {
+        hasAggregateInSelect = true;
+      } else {
+        nonAggregateCount += 1;
+      }
+    }
+
+    if (hasAggregateInSelect && (!groupByExprs || groupByExprs.length === 0)) {
+      if (nonAggregateCount > 0) {
+        return 'Aggregates present but no GROUP BY — non-aggregated fields detected.';
+      }
+    }
+
+    // GROUP BY must not contain aggregates
+    for (const g of groupByExprs) {
+      if (expressionContainsAggregate(g)) {
+        return 'GROUP BY clause cannot contain aggregate functions (COUNT, SUM, AVG, MIN, MAX). Remove the aggregate expression from the GROUP BY clause.';
+      }
+    }
+
+    // GROUP BY must not reference SELECT aliases (unqualified alias usage)
+    const selectAliases = new Set<string>();
+    for (const col of columns) {
+      const asName = normalizeName(col?.as);
+      if (asName) selectAliases.add(asName);
+    }
+
+    for (const g of groupByExprs) {
+      if (g?.type === 'column_ref' && !g.table && g.column) {
+        const colName = normalizeName(g.column);
+        if (selectAliases.has(colName)) {
+          return `GROUP BY references SELECT alias '${colName}'. Use the full expression instead: repeat the source expression from SELECT.`;
+        }
+      }
+    }
+  }
+
+  return null;
 }
 
-function isFunctionCall(sql: string, index: number): boolean {
-  return getNextNonWhitespaceChar(sql, index) === '(';
+export function rewriteGroupByAliases(sql: string): string {
+  let ast: any;
+  try {
+    const result = parser.astify(sql.trim().replace(/;\s*$/, ''), { database: 'MySQL' });
+    ast = Array.isArray(result) ? result[0] : result;
+  } catch {
+    return sql;
+  }
+
+  const selectNodes = [ast, ...collectNodes(ast, 'select').filter((n) => n !== ast)];
+
+  for (const selectNode of selectNodes) {
+    const aliasMap: Record<string, any> = {};
+    for (const col of selectNode?.columns || []) {
+      const alias = normalizeName(col?.as);
+      if (alias && col?.expr) {
+        aliasMap[alias] = col.expr;
+      }
+    }
+
+    if (!Object.keys(aliasMap).length) continue;
+
+    const groupBy = selectNode?.groupby || selectNode?.groupBy;
+    if (!groupBy) continue;
+
+    const exprs = getGroupByExpressions(groupBy);
+    const rewritten = exprs.map((g: any) => {
+      if (g?.type === 'column_ref' && !g.table && g.column) {
+        const name = normalizeName(g.column);
+        if (aliasMap[name]) {
+          // clone the alias expression
+          return JSON.parse(JSON.stringify(aliasMap[name]));
+        }
+      }
+      return g;
+    });
+
+    // assign back
+    if (Array.isArray(groupBy)) {
+      selectNode.groupby = rewritten;
+    } else if (groupBy && groupBy.columns) {
+      selectNode.groupby.columns = rewritten;
+    } else {
+      selectNode.groupby = rewritten;
+    }
+  }
+
+  try {
+    return parser.sqlify(ast, { database: 'MySQL' });
+  } catch {
+    return sql;
+  }
 }
 
-function isClauseKeywordToken(sql: string, _startIndex: number, endIndex: number, lowerToken: string): boolean {
-  if (lowerToken !== 'group' && lowerToken !== 'order') {
+export function stripAggregatesFromGroupBy(sql: string): string {
+  let ast: any;
+  try {
+    const result = parser.astify(sql.trim().replace(/;\s*$/, ''), { database: 'MySQL' });
+    ast = Array.isArray(result) ? result[0] : result;
+  } catch {
+    return sql;
+  }
+
+  const selectNodes = [ast, ...collectNodes(ast, 'select').filter((n) => n !== ast)];
+
+  for (const selectNode of selectNodes) {
+    const groupBy = selectNode?.groupby || selectNode?.groupBy;
+    if (!groupBy) continue;
+
+    const exprs = getGroupByExpressions(groupBy);
+    const filtered = exprs.filter((g: any) => !expressionContainsAggregate(g));
+
+    if (filtered.length === 0) {
+      delete selectNode.groupby;
+    } else if (Array.isArray(groupBy)) {
+      selectNode.groupby = filtered;
+    } else if (groupBy && groupBy.columns) {
+      selectNode.groupby.columns = filtered;
+    } else {
+      selectNode.groupby = filtered;
+    }
+  }
+
+  try {
+    return parser.sqlify(ast, { database: 'MySQL' });
+  } catch {
+    return sql;
+  }
+}
+
+export function hasNestedAggregates(sql: string): boolean {
+  if (!sql || typeof sql !== 'string') return false;
+
+  let ast: any;
+  try {
+    const result = parser.astify(sql.trim().replace(/;\s*$/, ''), { database: 'MySQL' });
+    ast = Array.isArray(result) ? result[0] : result;
+  } catch {
     return false;
   }
 
-  return getNextWord(sql, endIndex) === 'by';
-}
-
-function checkForbiddenColumns(normalizedSql: string): string | null {
-  for (const forbiddenColumn of FORBIDDEN_COLUMNS) {
-    if (new RegExp(String.raw`\b${forbiddenColumn}\b`, 'i').test(normalizedSql)) {
-      return `Column '${forbiddenColumn}' cannot be included in results.`;
+  const aggrFuncs = collectFunctions(ast).filter((f) => f.type === 'aggr_func');
+  for (const f of aggrFuncs) {
+    for (const key of Object.keys(f)) {
+      const child = f[key];
+      if (child && typeof child === 'object') {
+        const innerFuncs = collectFunctions(child);
+        if (innerFuncs.some((ifn) => ifn.type === 'aggr_func')) return true;
+      }
     }
   }
 
-  return null;
-}
-
-function checkReferencedTables(normalizedSql: string): string | null {
-  for (const tableName of extractTableNames(normalizedSql)) {
-    if (!ALLOWED_TABLES.has(tableName)) {
-      return 'Query references a data source that is not available.';
-    }
-  }
-
-  return null;
+  return false;
 }

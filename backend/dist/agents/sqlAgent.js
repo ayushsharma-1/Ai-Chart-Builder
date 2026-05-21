@@ -10,8 +10,15 @@ const promptTokens_1 = require("../utils/promptTokens");
 const schemaService_1 = require("../services/schemaService");
 const semanticMetrics_1 = require("../utils/semanticMetrics");
 const sqlGuard_1 = require("../utils/sqlGuard");
+const aiMetricsLogger_1 = require("../utils/aiMetricsLogger");
 const llm_service_1 = require("../services/llm.service");
 const SQL_KEYWORDS = new Set(['asc', 'desc', 'null', 'true', 'false', 'as', 'on', 'and', 'or', 'not', 'in', 'is', 'by', 'from', 'where', 'join', 'inner', 'left', 'right', 'outer', 'group', 'order', 'having', 'limit', 'union', 'all', 'distinct', 'case', 'when', 'then', 'else', 'end']);
+const SEMANTIC_ALIAS_BY_TABLE = {
+    tbljob: 'job',
+    tblassignjobcandidate: 'assignment',
+    tblcandidate: 'candidate',
+    tbldeals: 'deal',
+};
 // ── Zod schema for SQL agent output ────────────────────────────────────────
 const ChartAgentResponseSchema = zod_1.z.object({
     sql: zod_1.z.string().nullable(),
@@ -45,6 +52,7 @@ const ChartAgentResponseSchema = zod_1.z.object({
 function buildSqlAgentSystemPrompt(schema, intent) {
     const schemaContext = (0, schemaService_1.formatSchemaForPrompt)(schema);
     const metricContext = (0, semanticMetrics_1.getRelevantSemanticMetricPrompt)(intent.intent);
+    const aliasPlanContext = formatSemanticAliasPlan(buildSemanticAliasPlan(schema, intent));
     return [
         // FROZEN FIRST (cache-optimized prefix)
         promptTokens_1.FROZEN_IDENTITY,
@@ -54,9 +62,44 @@ function buildSqlAgentSystemPrompt(schema, intent) {
         promptTokens_1.FROZEN_CHART_RULES,
         promptTokens_1.FROZEN_OUTPUT_FORMAT,
         // DYNAMIC AFTER (not cached, varies per query)
+        aliasPlanContext,
         schemaContext,
         metricContext || '',
     ].filter(Boolean).join('\n\n');
+}
+function buildSemanticAliasPlan(schema, intent) {
+    const orderedTableNames = [...new Set([
+            ...intent.tables,
+            ...schema.tables.map((table) => table.tableName),
+        ])];
+    const aliasPlan = {};
+    for (const tableName of orderedTableNames) {
+        const normalizedTableName = tableName.toLowerCase();
+        aliasPlan[normalizedTableName] = SEMANTIC_ALIAS_BY_TABLE[normalizedTableName] || deriveSemanticAlias(normalizedTableName);
+    }
+    return aliasPlan;
+}
+function formatSemanticAliasPlan(aliasPlan) {
+    const entries = Object.entries(aliasPlan);
+    if (entries.length === 0) {
+        return '';
+    }
+    return [
+        'SEMANTIC ALIAS PLAN:',
+        ...entries.map(([tableName, alias]) => `- ${tableName} -> ${alias}`),
+        'RULE: Use these aliases exactly in FROM/JOIN clauses, and qualify each joined column with the matching alias.',
+        'RULE: Never use generic aliases such as t1, t2, t3, or other numeric placeholders.',
+    ].join('\n');
+}
+function deriveSemanticAlias(tableName) {
+    const stripped = tableName.replace(/^tbl/i, '').replace(/[^a-z0-9]+/gi, '').toLowerCase();
+    if (!stripped) {
+        return 'entity';
+    }
+    if (stripped.endsWith('s') && stripped.length > 3) {
+        return stripped.slice(0, -1);
+    }
+    return stripped;
 }
 function buildSqlAgentUserMessage(input, correctionNote) {
     const lines = [
@@ -107,7 +150,7 @@ function isMechanicalValidationError(reason) {
     return MECHANICAL_ERRORS.some((error) => reason.includes(error));
 }
 function stripAggregatesFromGroupBy(sql) {
-    return sql.replace(/GROUP BY\s+(.*?)(?=ORDER BY|LIMIT|HAVING|$)/is, (match, groupByClause) => {
+    return sql.replace(/\bGROUP BY\s+(.*?)(?=ORDER BY|LIMIT|HAVING|$)/is, (_match, groupByClause) => {
         const cleanedCols = String(groupByClause)
             .split(',')
             .map((column) => column.trim())
@@ -189,8 +232,8 @@ function findInvalidOrderByAlias(sql) {
         const trimmed = item.trim();
         if (!trimmed)
             continue;
-        const identifier = trimmed.split(/\s+/)[0].replace(/[`,]/g, '').toLowerCase();
-        if (/^[a-z_][\w$]*$/i.test(identifier) && projectedColumns.size > 0 && !projectedColumns.has(identifier) && !/\./.test(identifier)) {
+        const identifier = stripIdentifierQuotes(trimmed.split(/\s+/)[0].replace(/[`,]/g, '')).toLowerCase();
+        if (isSqlIdentifier(identifier) && projectedColumns.size > 0 && !projectedColumns.has(identifier) && !/\./.test(identifier)) {
             return `ORDER BY references '${identifier}', which is not a projected SELECT alias. Use a real output column or repeat the full expression.`;
         }
     }
@@ -204,13 +247,16 @@ function getProjectedSelectColumns(selectClause) {
             projectedColumns.add(alias.toLowerCase());
         }
         const trimmed = item.trim();
-        const simpleIdentifier = /^([A-Za-z_][\w$]*)$/i.exec(trimmed);
-        const qualifiedIdentifier = /^([A-Za-z_][\w$]*)\.([A-Za-z_][\w$]*)$/i.exec(trimmed);
-        if (simpleIdentifier?.[1]) {
-            projectedColumns.add(simpleIdentifier[1].toLowerCase());
+        if (isSqlIdentifier(stripIdentifierQuotes(trimmed))) {
+            projectedColumns.add(stripIdentifierQuotes(trimmed).toLowerCase());
+            continue;
         }
-        if (qualifiedIdentifier?.[2]) {
-            projectedColumns.add(qualifiedIdentifier[2].toLowerCase());
+        const qualifiedParts = trimmed.split('.');
+        if (qualifiedParts.length === 2) {
+            const columnPart = stripIdentifierQuotes(qualifiedParts[1].trim());
+            if (isSqlIdentifier(columnPart)) {
+                projectedColumns.add(columnPart.toLowerCase());
+            }
         }
     }
     return projectedColumns;
@@ -298,12 +344,36 @@ function extractSelectAlias(selectItem) {
     if (!trimmed || !/\s/.test(trimmed)) {
         return null;
     }
-    const explicitMatch = /\bAS\s+([A-Za-z_][\w$]*)\s*$/i.exec(trimmed) || /\bAS\s+`([A-Za-z_][\w$]*)`\s*$/i.exec(trimmed) || /\bAS\s+"([A-Za-z_][\w$]*)"\s*$/i.exec(trimmed);
-    if (explicitMatch?.[1]) {
-        return explicitMatch[1];
+    const upper = trimmed.toUpperCase();
+    const asIndex = upper.lastIndexOf(' AS ');
+    if (asIndex >= 0) {
+        const aliasCandidate = stripIdentifierQuotes(trimmed.slice(asIndex + 4).trim());
+        return isSqlIdentifier(aliasCandidate) ? aliasCandidate : null;
     }
-    const implicitMatch = /([A-Za-z_][\w$]*)\s*$/i.exec(trimmed) || /`([A-Za-z_][\w$]*)`\s*$/i.exec(trimmed) || /"([A-Za-z_][\w$]*)"\s*$/i.exec(trimmed);
-    return implicitMatch?.[1] || null;
+    const implicitCandidate = stripIdentifierQuotes(trimmed.slice(trimmed.lastIndexOf(' ') + 1).trim());
+    return isSqlIdentifier(implicitCandidate) ? implicitCandidate : null;
+}
+function isSqlIdentifier(value) {
+    if (!value || !/^[A-Za-z_]/.test(value)) {
+        return false;
+    }
+    for (let index = 1; index < value.length; index += 1) {
+        if (!/[A-Za-z0-9_$]/.test(value[index])) {
+            return false;
+        }
+    }
+    return true;
+}
+function stripIdentifierQuotes(value) {
+    if (!value) {
+        return value;
+    }
+    const firstChar = value[0];
+    const lastChar = value[value.length - 1];
+    if ((firstChar === '`' && lastChar === '`') || (firstChar === '"' && lastChar === '"')) {
+        return value.slice(1, -1);
+    }
+    return value;
 }
 function readQuotedSection(sql, startIndex, quote) {
     let index = startIndex + 1;
@@ -330,7 +400,7 @@ function readQuotedSection(sql, startIndex, quote) {
 async function generateSqlFromAgent(input) {
     const systemPrompt = buildSqlAgentSystemPrompt(input.schema, input.intent);
     const baseUserMessage = buildSqlAgentUserMessage(input);
-    const correctionNote = `CORRECTION REQUIRED: Your previous query used column 'deleted' or 'archived' on tblassignjobcandidate. This column does NOT exist on tblassignjobcandidate. DO NOT add any deleted/archived filter to tblassignjobcandidate. Regenerate the query without any deleted or archived filter on tblassignjobcandidate.`;
+    const semanticAliasPlan = buildSemanticAliasPlan(input.schema, input.intent);
     const createCompletion = (userMessage) => groq_1.default.chat.completions.create({
         model: 'llama-3.3-70b-versatile',
         messages: [
@@ -342,21 +412,47 @@ async function generateSqlFromAgent(input) {
         response_format: { type: 'json_object' },
     });
     const parseCompletion = async (userMessage) => {
-        const completion = await createCompletion(userMessage);
-        const raw = completion.choices[0]?.message?.content;
-        if (!raw) {
-            throw new Error('SQL agent returned empty response');
+        const start = Date.now();
+        let usage;
+        let success = false;
+        let errorMessage;
+        try {
+            const completion = await createCompletion(userMessage);
+            usage = completion.usage;
+            const raw = completion.choices[0]?.message?.content;
+            if (!raw) {
+                throw new Error('SQL agent returned empty response');
+            }
+            const parsed = JSON.parse(raw);
+            const validated = ChartAgentResponseSchema.safeParse(parsed);
+            if (!validated.success) {
+                console.error('[SQLAgent] Zod validation failed:', validated.error.flatten());
+                throw new Error('SQL agent returned invalid response structure');
+            }
+            success = true;
+            return validated.data;
         }
-        const parsed = JSON.parse(raw);
-        const validated = ChartAgentResponseSchema.safeParse(parsed);
-        if (!validated.success) {
-            console.error('[SQLAgent] Zod validation failed:', validated.error.flatten());
-            throw new Error('SQL agent returned invalid response structure');
+        catch (err) {
+            errorMessage = err?.message || String(err);
+            throw err;
         }
-        return validated.data;
+        finally {
+            (0, aiMetricsLogger_1.logAICall)({
+                callType: 'sql_generation',
+                model: 'llama-3.3-70b-versatile',
+                sessionId: input.sessionId,
+                userPrompt: input.userPrompt,
+                success,
+                errorMessage,
+                latencyMs: Date.now() - start,
+                usage,
+            });
+        }
     };
     let response = await parseCompletion(baseUserMessage);
     if (response.sql) {
+        const semanticAliasRewrite = (0, sqlGuard_1.rewriteSemanticAliases)(response.sql, semanticAliasPlan);
+        response.sql = semanticAliasRewrite.sql;
         response.sql = rewriteGroupByAliases(response.sql);
         const normalization = (0, sqlGuard_1.normalizeReservedAliases)(response.sql);
         response.sql = normalization.sql;
@@ -383,6 +479,8 @@ async function generateSqlFromAgent(input) {
             if (correctionNote) {
                 const retried = await parseCompletion(buildSqlAgentUserMessage(input, correctionNote));
                 if (retried.sql) {
+                    const retriedSemanticRewrite = (0, sqlGuard_1.rewriteSemanticAliases)(retried.sql, semanticAliasPlan);
+                    retried.sql = retriedSemanticRewrite.sql;
                     const retriedNormalization = (0, sqlGuard_1.normalizeReservedAliases)(retried.sql);
                     retried.sql = retriedNormalization.sql;
                     if (retried.xAxis && retriedNormalization.aliasMap[retried.xAxis.toLowerCase()]) {
@@ -397,7 +495,6 @@ async function generateSqlFromAgent(input) {
                         issues = retriedIssues;
                     }
                     else {
-                        issues = retriedIssues;
                         throw new Error(`SQL validation failed: ${retriedIssues.join(' | ')}`);
                     }
                 }

@@ -46,9 +46,17 @@ export interface OrchestratorResult {
 
 export interface OrchestratorError {
   success: false;
-  type: 'non_analytics' | 'clarification' | 'validation_error' | 'empty_result' | 'error';
+  type: 'non_analytics' | 'clarification' | 'validation_error' | 'empty_result' | 'error' | 'rate_limit';
   message: string;
   clarificationNeeded?: string;
+}
+
+export function isGroqRateLimitError(err: unknown): boolean {
+  const msg = String((err as { message?: string; error?: { message?: string } })?.message
+    || (err as { error?: { message?: string } })?.error?.message
+    || err
+    || '');
+  return /rate\s*limit\s*reached|tokens per day|\bTPD\b/i.test(msg);
 }
 
 export type OrchestratorResponse = OrchestratorResult | OrchestratorError;
@@ -64,7 +72,7 @@ export async function runAnalyticsPipeline(input: OrchestratorInput): Promise<Or
   let intent: IntentAnalysis;
 
   try {
-    intent = await analyzeIntent(input.userPrompt, input.previousContext);
+    intent = await analyzeIntent(input.userPrompt, input.previousContext, { sessionId: input.sessionId });
     timings.intentMs = Date.now() - intentStart;
     console.info('[Pipeline] Intent:', intent.intent, '| Tables:', intent.tables.join(', '));
   } catch (err: any) {
@@ -114,11 +122,20 @@ export async function runAnalyticsPipeline(input: OrchestratorInput): Promise<Or
       userPrompt: input.userPrompt,
       intent,
       schema,
+      sessionId: input.sessionId,
       previousContext: input.previousContext,
     });
     timings.sqlGenMs = Date.now() - sqlGenStart;
   } catch (err: any) {
     console.error('[Pipeline] SQL agent failed:', err.message);
+
+    if (isGroqRateLimitError(err)) {
+      return {
+        success: false,
+        type: 'rate_limit',
+        message: err.message || String(err),
+      };
+    }
 
     // Distinguish validation blocks from server errors
     const isValidation = err.message?.includes('validation failed') || err.message?.includes('Query blocked');
@@ -144,15 +161,49 @@ export async function runAnalyticsPipeline(input: OrchestratorInput): Promise<Or
   const executionStart = Date.now();
   let queryResult;
 
-  try {
-    queryResult = await runQuery(agentResponse.sql);
+    try {
+    queryResult = await runQuery(agentResponse.sql, [], {
+      sessionId: input.sessionId,
+      userPrompt: input.userPrompt,
+      originalSql: agentResponse.sql,
+      retryCount: 0,
+    });
     timings.executionMs = Date.now() - executionStart;
   } catch (err: any) {
-    console.error('[Pipeline] Execution failed:', err.message);
+    console.error('[Pipeline] Execution failed', {
+      sql: agentResponse.sql,
+      error: {
+        name: err?.name,
+        message: err?.message,
+        stack: err?.stack,
+        code: err?.code,
+        errno: err?.errno,
+        sqlState: err?.sqlState,
+      },
+      timingMs: Date.now() - executionStart,
+    });
     return { success: false, type: 'error', message: 'Something went wrong. Please try again.' };
   }
 
   if (queryResult.rowCount === 0) {
+    // Log empty analytical result when chart is not a table
+    try {
+      const { logAICall } = await import('../utils/aiMetricsLogger');
+      logAICall({
+        callType: 'sql_execution',
+        model: 'mysql2',
+        sessionId: input.sessionId,
+        userPrompt: input.userPrompt,
+        success: true,
+        errorMessage: 'EMPTY_ANALYTICAL_RESULT',
+        errorDetails: { reason: 'No rows returned for non-table chart', name: 'EMPTY_ANALYTICAL_RESULT', category: 'EMPTY_RESULT' },
+        query: { sql: agentResponse.sql, sanitizedSql: agentResponse.sql, stage: 'execution' },
+        latencyMs: timings.executionMs,
+      });
+    } catch (e) {
+      console.warn('[Pipeline] Failed to log empty analytical result', e?.message || e);
+    }
+
     return {
       success: false,
       type: 'empty_result',

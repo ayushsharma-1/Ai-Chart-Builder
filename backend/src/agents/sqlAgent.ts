@@ -11,8 +11,8 @@ import {
 import { SchemaSnapshot, formatSchemaForPrompt } from '../services/schemaService';
 import { getRelevantSemanticMetricPrompt } from '../utils/semanticMetrics';
 import { IntentAnalysis } from './intentAgent';
-import { normalizeReservedAliases, rewriteSemanticAliases, validateSql } from '../utils/sqlGuard';
-import { validateSqlForOnlyFullGroupBy } from '../services/llm.service';
+import { normalizeReservedAliases, rewriteSemanticAliases, validateSql, rewriteGroupByAliases, stripAggregatesFromGroupBy, validateSqlForOnlyFullGroupBy, hasNestedAggregates, getColumnRefsFromSql } from '../utils/sqlGuard';
+import { logAICall } from '../utils/aiMetricsLogger';
 
 const SQL_KEYWORDS = new Set(['asc', 'desc', 'null', 'true', 'false', 'as', 'on', 'and', 'or', 'not', 'in', 'is', 'by', 'from', 'where', 'join', 'inner', 'left', 'right', 'outer', 'group', 'order', 'having', 'limit', 'union', 'all', 'distinct', 'case', 'when', 'then', 'else', 'end']);
 const SEMANTIC_ALIAS_BY_TABLE: Record<string, string> = {
@@ -40,6 +40,7 @@ export interface SqlAgentInput {
   userPrompt: string;
   intent: IntentAnalysis;
   schema: SchemaSnapshot;
+  sessionId?: string;
   previousContext?: {
     previousPrompt?: string;
     previousTitle?: string;
@@ -71,6 +72,7 @@ function buildSqlAgentSystemPrompt(schema: SchemaSnapshot, intent: IntentAnalysi
   const schemaContext = formatSchemaForPrompt(schema);
   const metricContext = getRelevantSemanticMetricPrompt(intent.intent);
   const aliasPlanContext = formatSemanticAliasPlan(buildSemanticAliasPlan(schema, intent));
+  const tableRules = buildTableRulesFromSchema(schema);
 
   return [
     // FROZEN FIRST (cache-optimized prefix)
@@ -82,9 +84,35 @@ function buildSqlAgentSystemPrompt(schema: SchemaSnapshot, intent: IntentAnalysi
     FROZEN_OUTPUT_FORMAT,
     // DYNAMIC AFTER (not cached, varies per query)
     aliasPlanContext,
+    tableRules,
     schemaContext,
     metricContext || '',
   ].filter(Boolean).join('\n\n');
+}
+
+function buildTableRulesFromSchema(schema: SchemaSnapshot): string {
+  if (!schema || !schema.tables || schema.tables.length === 0) return '';
+
+  const lines: string[] = ['TABLE-SPECIFIC RULES:'];
+
+  for (const t of schema.tables) {
+    const cols = new Set(t.columns.map((c) => c.columnName.toLowerCase()));
+    if (cols.has('deleted')) {
+      lines.push(`- ${t.tableName}: when filtering for active rows, use ${t.tableName}.deleted = 0`);
+    } else if (cols.has('is_deleted')) {
+      lines.push(`- ${t.tableName}: when filtering for active rows, use ${t.tableName}.is_deleted = 0`);
+    } else {
+      lines.push(`- ${t.tableName}: NO soft-delete column detected. Do NOT add deleted/is_deleted/archived filters to this table.`);
+    }
+
+    // suggest sanitization only when varchar monetary fields detected in schema warnings
+    const monetaryVarchar = t.columns.find((c) => c.dataType === 'varchar' && /(amount|value|billing)/i.test(c.columnName));
+    if (monetaryVarchar) {
+      lines.push(`- ${t.tableName}: ${monetaryVarchar.columnName} is VARCHAR — LLM should sanitize with CAST(REPLACE(${monetaryVarchar.columnName},',','') AS DECIMAL(15,2)) before numeric ops.`);
+    }
+  }
+
+  return lines.join('\n');
 }
 
 function buildSemanticAliasPlan(schema: SchemaSnapshot, intent: IntentAnalysis): Record<string, string> {
@@ -162,6 +190,58 @@ function buildSqlAgentUserMessage(input: SqlAgentInput, correctionNote?: string)
   return lines.join('\n');
 }
 
+function buildMinimalRetryUserMessage(input: SqlAgentInput, correctionNote: string, affectedTables: string[]): string {
+  const lines: string[] = [
+    `USER REQUEST: ${input.userPrompt}`,
+    `DETECTED INTENT: ${input.intent.intent}`,
+    '',
+    'CORRECTION REQUIRED:',
+    correctionNote.trim(),
+    '',
+    'Relevant tables and valid columns:',
+  ];
+
+  for (const tbl of affectedTables) {
+    const tableMeta = input.schema.tables.find((t) => t.tableName.toLowerCase() === tbl.toLowerCase());
+    const cols = tableMeta ? tableMeta.columns.map((c) => c.columnName).join(', ') : '(unknown)';
+    lines.push(`- ${tbl}: [${cols}]`);
+  }
+
+  lines.push('', 'Regenerate the SQL using ONLY the valid columns shown above. Preserve original aggregation intent and chart hint.');
+
+  return lines.join('\n');
+}
+
+function detectWindowFunctionMisuse(sql: string): boolean {
+  const hasWindow = /\b(over)\s*\(/i.test(sql);
+  const hasWith = /\bwith\b\s+/i.test(sql);
+  if (hasWindow && !hasWith) return true; // require WITH aggregated staging
+  return false;
+}
+
+function logSqlAgentEvent(input: SqlAgentInput, payload: {
+  callType: 'sql_generation' | 'sql_validation' | 'sql_retry';
+  success: boolean;
+  latencyMs: number;
+  usage?: any;
+  errorMessage?: string;
+  sqlFlow: NonNullable<ChartAgentResponse['sql']> extends never ? never : import('../utils/aiMetricsLogger').AIMetricsEntry['sqlFlow'];
+  query?: import('../utils/aiMetricsLogger').AIMetricsEntry['query'];
+}): void {
+  logAICall({
+    callType: payload.callType,
+    model: 'llama-3.3-70b-versatile',
+    sessionId: input.sessionId,
+    userPrompt: input.userPrompt,
+    success: payload.success,
+    errorMessage: payload.errorMessage,
+    sqlFlow: payload.sqlFlow,
+    query: payload.query,
+    latencyMs: payload.latencyMs,
+    usage: payload.usage,
+  });
+}
+
 function collectValidationIssues(sql: string): string[] {
   const issues: string[] = [];
 
@@ -200,71 +280,6 @@ function isMechanicalValidationError(reason: string): boolean {
   return MECHANICAL_ERRORS.some((error) => reason.includes(error));
 }
 
-function stripAggregatesFromGroupBy(sql: string): string {
-  return sql.replace(/\bGROUP BY\s+(.*?)(?=ORDER BY|LIMIT|HAVING|$)/is, (_match, groupByClause) => {
-    const cleanedCols = String(groupByClause)
-      .split(',')
-      .map((column: string) => column.trim())
-      .filter((column: string) => !/\b(COUNT|SUM|AVG|MIN|MAX)\s*\(/i.test(column))
-      .filter((column: string) => !/FROM_UNIXTIME\s*\(\s*(COUNT|SUM|AVG|MIN|MAX)/i.test(column))
-      .join(', ');
-
-    return cleanedCols ? `GROUP BY ${cleanedCols} ` : '';
-  });
-}
-
-function hasNestedAggregates(sql: string): boolean {
-  const aggregateNames = ['count', 'sum', 'avg', 'min', 'max', 'variance', 'stddev'];
-  const lowerSql = sql.toLowerCase();
-
-  for (const name of aggregateNames) {
-    let searchIndex = 0;
-
-    while (searchIndex < lowerSql.length) {
-      const startIndex = lowerSql.indexOf(`${name}(`, searchIndex);
-      if (startIndex === -1) {
-        break;
-      }
-
-      const inner = readBalancedParentheses(lowerSql, startIndex + name.length);
-      if (inner?.content && containsAggregateCall(inner.content, aggregateNames)) {
-        return true;
-      }
-
-      searchIndex = startIndex + name.length + 1;
-    }
-  }
-
-  return false;
-}
-
-function containsAggregateCall(sql: string, aggregateNames: string[]): boolean {
-  return aggregateNames.some((name) => new RegExp(String.raw`\b${name}\s*\(`, 'i').test(sql));
-}
-
-function readBalancedParentheses(input: string, openParenIndex: number): { content: string; endIndex: number } | null {
-  if (input[openParenIndex] !== '(') {
-    return null;
-  }
-
-  let depth = 0;
-  for (let index = openParenIndex; index < input.length; index += 1) {
-    const char = input[index];
-    if (char === '(') {
-      depth += 1;
-    } else if (char === ')') {
-      depth -= 1;
-      if (depth === 0) {
-        return {
-          content: input.slice(openParenIndex + 1, index),
-          endIndex: index,
-        };
-      }
-    }
-  }
-
-  return null;
-}
 
 function hasDuplicateSelectAliases(sql: string): boolean {
   const aliases = new Set<string>();
@@ -386,53 +401,8 @@ function splitTopLevelCommaSeparated(input: string): string[] {
   return parts;
 }
 
-/**
- * Rewrites GROUP BY clauses that reference SELECT aliases.
- * Builds a map of alias -> full expression from the SELECT clause,
- * then replaces alias usage in GROUP BY with its source expression.
- */
-function rewriteGroupByAliases(sql: string): string {
-  const selectMatch = /^\s*SELECT\s+([\s\S]+?)\s+FROM\b/i.exec(sql);
-  if (!selectMatch) return sql;
-
-  const selectClause = selectMatch[1];
-  const aliasMap = new Map<string, string>();
-  const items = splitTopLevelCommaSeparated(selectClause);
-
-  for (const item of items) {
-    const trimmed = item.trim();
-
-    const explicitMatch = /^([\s\S]+?)\s+AS\s+([`"]?[a-z_][a-z0-9_]*[`"]?)\s*$/i.exec(trimmed);
-    if (explicitMatch) {
-      const expr = explicitMatch[1].trim();
-      const alias = explicitMatch[2].replace(/[`"]/g, '').toLowerCase();
-      aliasMap.set(alias, expr);
-      continue;
-    }
-
-    const implicitMatch = /^([\s\S]+)\s+([a-z_][a-z0-9_]*)$/i.exec(trimmed);
-    if (implicitMatch) {
-      const lastWord = implicitMatch[2].toLowerCase();
-      if (!SQL_KEYWORDS.has(lastWord)) {
-        aliasMap.set(lastWord, implicitMatch[1].trim());
-      }
-    }
-  }
-
-  if (aliasMap.size === 0) return sql;
-
-  return sql.replace(
-    /\bGROUP\s+BY\s+([\s\S]+?)(?=\s+(?:HAVING|ORDER|LIMIT|UNION|$))/i,
-    (fullMatch, groupByBody) => {
-      const rewrittenItems = splitTopLevelCommaSeparated(groupByBody).map((item) => {
-        const key = item.trim().replace(/[`"]/g, '').toLowerCase();
-        return aliasMap.get(key) ?? item.trim();
-      });
-
-      return `GROUP BY ${rewrittenItems.join(', ')}`;
-    }
-  );
-}
+// Group-by alias rewrites and aggregate removals are handled by the AST-based
+// helpers in `sqlGuard.ts`.
 
 function extractSelectAlias(selectItem: string): string | null {
   const trimmed = selectItem.trim();
@@ -526,31 +496,73 @@ export async function generateSqlFromAgent(input: SqlAgentInput): Promise<ChartA
   });
 
   const parseCompletion = async (userMessage: string) => {
-    const completion = await createCompletion(userMessage);
-    const raw = completion.choices[0]?.message?.content;
+    const start = Date.now();
+    let usage: any;
+    let success = false;
+    let errorMessage: string | undefined;
+    let generatedSql: string | undefined;
 
-    if (!raw) {
-      throw new Error('SQL agent returned empty response');
+    try {
+      const completion = await createCompletion(userMessage);
+      usage = completion.usage;
+      const raw = completion.choices[0]?.message?.content;
+
+      if (!raw) {
+        throw new Error('SQL agent returned empty response');
+      }
+
+      const parsed = JSON.parse(raw);
+      const validated = ChartAgentResponseSchema.safeParse(parsed);
+
+      if (!validated.success) {
+        console.error('[SQLAgent] Zod validation failed:', validated.error.flatten());
+        throw new Error('SQL agent returned invalid response structure');
+      }
+
+      generatedSql = validated.data.sql || undefined;
+      success = true;
+      return validated.data;
+    } catch (err: any) {
+      errorMessage = err?.message || String(err);
+      throw err;
+    } finally {
+      logSqlAgentEvent(input, {
+        callType: 'sql_generation',
+        success,
+        errorMessage,
+        latencyMs: Date.now() - start,
+        usage,
+        sqlFlow: {
+          stage: 'generation',
+          sql: generatedSql,
+          validationPassed: success,
+        },
+        query: generatedSql ? { sql: generatedSql, stage: 'generation' } : undefined,
+      });
     }
-
-    const parsed = JSON.parse(raw);
-    const validated = ChartAgentResponseSchema.safeParse(parsed);
-
-    if (!validated.success) {
-      console.error('[SQLAgent] Zod validation failed:', validated.error.flatten());
-      throw new Error('SQL agent returned invalid response structure');
-    }
-
-    return validated.data;
   };
 
-  let response = await parseCompletion(baseUserMessage);
+  let llmRetries = 0;
+
+  const callParseCompletion = async (userMessage: string, isRetry = false) => {
+    if (isRetry) {
+      llmRetries += 1;
+      if (llmRetries > 2) {
+        throw new Error('Max LLM retries exceeded');
+      }
+    }
+
+    return parseCompletion(userMessage);
+  };
+
+  let response = await callParseCompletion(baseUserMessage, false);
 
   if (response.sql) {
+    const currentSql = response.sql;
     const semanticAliasRewrite = rewriteSemanticAliases(response.sql, semanticAliasPlan);
     response.sql = semanticAliasRewrite.sql;
 
-    response.sql = rewriteGroupByAliases(response.sql);
+      response.sql = rewriteGroupByAliases(response.sql);
 
     const normalization = normalizeReservedAliases(response.sql);
     response.sql = normalization.sql;
@@ -562,24 +574,76 @@ export async function generateSqlFromAgent(input: SqlAgentInput): Promise<ChartA
       response.yAxis = normalization.aliasMap[response.yAxis.toLowerCase()];
     }
 
-    let issues = collectValidationIssues(response.sql);
-    if (issues.length > 0) {
-      const validationMessage = issues.join(' | ');
-      console.error(`[SQLAgent] SQL validation failed. Reason: ${validationMessage}`);
-      console.error(`[SQLAgent] Generated SQL was:\n${response.sql}`);
-
-      let correctionNote: string | undefined;
-      const forbiddenColumnIssue = issues.find((issue) => /tblassignjobcandidate/i.test(issue) && /(deleted|archived)/i.test(issue));
-      const invalidColumnIssue = issues.find((issue) => /Column '.*?' does not exist on table '.*?'/i.test(issue));
-
-      if (forbiddenColumnIssue) {
-        correctionNote = `CORRECTION REQUIRED: Your previous query used column 'deleted' or 'archived' on tblassignjobcandidate. This column does NOT exist on tblassignjobcandidate. DO NOT add any deleted/archived filter to tblassignjobcandidate. Regenerate the query without any deleted or archived filter on tblassignjobcandidate.`;
-      } else if (invalidColumnIssue) {
-        correctionNote = `CORRECTION REQUIRED: ${invalidColumnIssue} In JOIN queries, validate column ownership before assigning an alias. For example, 'name' belongs to tbljob, not tblassignjobcandidate. Regenerate the query with corrected column table aliases.`;
+    // Schema-aware checks: ensure referenced columns exist and sanitization matches types
+    const schemaColumnMap: Record<string, Set<string>> = {};
+    const schemaTypeMap: Record<string, Record<string, string>> = {};
+    for (const t of input.schema.tables) {
+      const name = t.tableName.toLowerCase();
+      schemaColumnMap[name] = new Set(t.columns.map((c) => c.columnName.toLowerCase()));
+      schemaTypeMap[name] = {};
+      for (const c of t.columns) {
+        schemaTypeMap[name][c.columnName.toLowerCase()] = c.dataType;
       }
+    }
 
-      if (correctionNote) {
-        const retried = await parseCompletion(buildSqlAgentUserMessage(input, correctionNote));
+    const columnRefs = getColumnRefsFromSql(response.sql);
+    const missingColumns: Array<{ table: string | null; column: string }> = [];
+    const sanitizationMismatches: string[] = [];
+
+    for (const ref of columnRefs) {
+      const tbl = ref.table ? ref.table.toLowerCase() : null;
+      const col = ref.column ? ref.column.toLowerCase() : '';
+      if (tbl) {
+        if (!schemaColumnMap[tbl] || !schemaColumnMap[tbl].has(col)) {
+          missingColumns.push({ table: tbl, column: col });
+        }
+      }
+    }
+
+    // detect obvious sanitization misuse: REPLACE(...,',','') or CAST(REPLACE(... ) AS DECIMAL) applied to non-varchar
+    const lowerSql = response.sql.toLowerCase();
+    const replaceMatches = [...(lowerSql.matchAll(/replace\s*\(\s*([^,\)]+)\s*,\s*'\s*,\s*'\s*\)/gi))];
+    for (const m of replaceMatches) {
+      const colRef = String(m[1]).replace(/[`"\s]/g, '');
+      const parts = colRef.split('.');
+      if (parts.length === 2) {
+        const tbl = parts[0].toLowerCase();
+        const col = parts[1].toLowerCase();
+        const dtype = schemaTypeMap[tbl]?.[col];
+        if (dtype && dtype !== 'varchar' && dtype !== 'text' && dtype !== 'char') {
+          sanitizationMismatches.push(`${tbl}.${col} is ${dtype} but was wrapped in REPLACE/CLEANUP sanitization`);
+        }
+      }
+    }
+
+    let issues = collectValidationIssues(response.sql);
+
+    // AST-first: detect window misuse (require CTE staging)
+    if (detectWindowFunctionMisuse(currentSql)) {
+      issues.push('Window function used without aggregated staging; wrap base aggregation in a CTE and apply window functions in an outer query.');
+    }
+
+    if (missingColumns.length > 0) {
+      // prefer correction flow: tell LLM to remove nonexistent soft-delete filters or fix ownership
+      const missingSoftDeletes = missingColumns.filter((m) => ['deleted', 'archived'].includes(m.column));
+      if (missingSoftDeletes.length > 0) {
+        const notes = missingSoftDeletes.map((m) => `${m.table}.${m.column}`).join(', ');
+        const correctionNote = `CORRECTION REQUIRED: The following referenced soft-delete columns do NOT exist: ${notes}. Remove these filters and regenerate a valid query referencing only existing columns.`;
+        console.warn('[SQLAgent] Missing soft-delete columns detected:', notes);
+        const affectedTables = [...new Set(missingSoftDeletes.map((m) => String(m.table).toLowerCase()))];
+        console.info('[SQLAgent] Sending minimal retry prompt for tables:', affectedTables.join(', '));
+        logSqlAgentEvent(input, {
+          callType: 'sql_retry',
+          success: true,
+          latencyMs: 0,
+          sqlFlow: {
+            stage: 'retry',
+            previousSql: currentSql,
+            correctionNote,
+            retried: true,
+          },
+        });
+        const retried = await callParseCompletion(buildMinimalRetryUserMessage(input, correctionNote, affectedTables), true);
         if (retried.sql) {
           const retriedSemanticRewrite = rewriteSemanticAliases(retried.sql, semanticAliasPlan);
           retried.sql = retriedSemanticRewrite.sql;
@@ -595,6 +659,102 @@ export async function generateSqlFromAgent(input: SqlAgentInput): Promise<ChartA
           }
 
           const retriedIssues = collectValidationIssues(retried.sql);
+          if (retriedIssues.length === 0) {
+            response = retried;
+            issues = retriedIssues;
+          } else {
+            throw new Error(`SQL validation failed: ${retriedIssues.join(' | ')}`);
+          }
+        }
+      } else {
+        // missing non-deleted columns -> treat as validation issue
+        for (const m of missingColumns) {
+          issues.push(`Column '${m.column}' does not exist on table '${m.table || 'unknown'}'`);
+        }
+      }
+    }
+
+    if (sanitizationMismatches.length > 0) {
+      for (const s of sanitizationMismatches) issues.push(s);
+    }
+    if (issues.length > 0) {
+      const validationMessage = issues.join(' | ');
+
+      logSqlAgentEvent(input, {
+        callType: 'sql_validation',
+        success: false,
+        latencyMs: 0,
+        errorMessage: validationMessage,
+        sqlFlow: {
+          stage: 'validation',
+          sql: currentSql,
+          validationPassed: false,
+          validationIssues: [...issues],
+        },
+        query: currentSql ? { sql: currentSql, stage: 'validation' } : undefined,
+      });
+
+      console.error(`[SQLAgent] SQL validation failed. Reason: ${validationMessage}`);
+      console.error(`[SQLAgent] Generated SQL was:\n${response.sql}`);
+
+      let correctionNote: string | undefined;
+      const forbiddenColumnIssue = issues.find((issue) => /tblassignjobcandidate/i.test(issue) && /(deleted|archived)/i.test(issue));
+      const invalidColumnIssue = issues.find((issue) => /Column '.*?' does not exist on table '.*?'/i.test(issue));
+
+      if (forbiddenColumnIssue) {
+        correctionNote = `CORRECTION REQUIRED: Your previous query used column 'deleted' or 'archived' on tblassignjobcandidate. This column does NOT exist on tblassignjobcandidate. DO NOT add any deleted/archived filter to tblassignjobcandidate. Regenerate the query without any deleted or archived filter on tblassignjobcandidate.`;
+      } else if (invalidColumnIssue) {
+        correctionNote = `CORRECTION REQUIRED: ${invalidColumnIssue} In JOIN queries, validate column ownership before assigning an alias. For example, 'name' belongs to tbljob, not tblassignjobcandidate. Regenerate the query with corrected column table aliases.`;
+      }
+
+      if (correctionNote) {
+        const affectedTables = [...new Set(missingColumns.map((m) => String(m.table).toLowerCase()))];
+        console.info('[SQLAgent] Sending minimal retry prompt for tables:', affectedTables.join(', '));
+        logSqlAgentEvent(input, {
+          callType: 'sql_retry',
+          success: true,
+          latencyMs: 0,
+          sqlFlow: {
+            stage: 'retry',
+            previousSql: currentSql,
+            correctionNote,
+            retried: true,
+          },
+        });
+        const retried = await callParseCompletion(buildMinimalRetryUserMessage(input, correctionNote, affectedTables), true);
+        if (retried.sql) {
+          const retriedSql = retried.sql;
+          const retriedSemanticRewrite = rewriteSemanticAliases(retried.sql, semanticAliasPlan);
+          retried.sql = retriedSemanticRewrite.sql;
+
+          const retriedNormalization = normalizeReservedAliases(retried.sql);
+          retried.sql = retriedNormalization.sql;
+
+          if (retried.xAxis && retriedNormalization.aliasMap[retried.xAxis.toLowerCase()]) {
+            retried.xAxis = retriedNormalization.aliasMap[retried.xAxis.toLowerCase()];
+          }
+          if (retried.yAxis && retriedNormalization.aliasMap[retried.yAxis.toLowerCase()]) {
+            retried.yAxis = retriedNormalization.aliasMap[retried.yAxis.toLowerCase()];
+          }
+
+          const retriedIssues = collectValidationIssues(retried.sql);
+          logSqlAgentEvent(input, {
+            callType: 'sql_retry',
+            success: retriedIssues.length === 0,
+            latencyMs: 0,
+            errorMessage: retriedIssues.length > 0 ? retriedIssues.join(' | ') : undefined,
+            sqlFlow: {
+              stage: 'retry',
+              sql: retried.sql,
+              previousSql: currentSql,
+              correctionNote,
+              validationPassed: retriedIssues.length === 0,
+              validationIssues: [...retriedIssues],
+              retried: true,
+            },
+            query: { sql: retriedSql, stage: 'retry' },
+          });
+
           if (retriedIssues.length === 0) {
             response = retried;
             issues = retriedIssues;
@@ -620,17 +780,76 @@ export async function generateSqlFromAgent(input: SqlAgentInput): Promise<ChartA
             reason: validationMessage,
           });
           response.sql = revalidation.sanitizedSql;
+
+          logSqlAgentEvent(input, {
+            callType: 'sql_validation',
+            success: true,
+            latencyMs: 0,
+            errorMessage: undefined,
+            sqlFlow: {
+              stage: 'final',
+              sql: response.sql,
+              previousSql: currentSql,
+              validationPassed: true,
+              validationIssues: [...issues],
+              transformations: ['stripAggregatesFromGroupBy'],
+            },
+            query: { sql: response.sql, sanitizedSql: revalidation.sanitizedSql, stage: 'final' },
+          });
         } else {
+          logSqlAgentEvent(input, {
+            callType: 'sql_validation',
+            success: false,
+            latencyMs: 0,
+            errorMessage: validationMessage,
+            sqlFlow: {
+              stage: 'validation',
+              sql: response.sql,
+              previousSql: currentSql,
+              validationPassed: false,
+              validationIssues: [...issues],
+            },
+            query: { sql: response.sql, stage: 'validation' },
+          });
+
           throw new Error(`SQL validation failed: ${validationMessage}`);
         }
       } else {
+        logSqlAgentEvent(input, {
+          callType: 'sql_validation',
+          success: false,
+          latencyMs: 0,
+          errorMessage: validationMessage,
+          sqlFlow: {
+            stage: 'validation',
+            sql: currentSql,
+            previousSql: currentSql,
+            validationPassed: false,
+            validationIssues: [...issues],
+          },
+          query: { sql: currentSql, stage: 'validation' },
+        });
+
         throw new Error(`SQL validation failed: ${validationMessage}`);
       }
     } else {
-      const guard = validateSql(response.sql);
+      const guard = validateSql(currentSql);
       if (guard.sanitizedSql) {
         response.sql = guard.sanitizedSql;
       }
+
+      logSqlAgentEvent(input, {
+        callType: 'sql_validation',
+        success: true,
+        latencyMs: 0,
+        sqlFlow: {
+          stage: 'final',
+          sql: response.sql ?? currentSql,
+          validationPassed: true,
+          transformations: guard.sanitizedSql && guard.sanitizedSql !== currentSql ? ['validateSqlSanitized'] : undefined,
+        },
+        query: { sql: response.sql ?? currentSql, sanitizedSql: guard.sanitizedSql, stage: 'final' },
+      });
     }
   }
 

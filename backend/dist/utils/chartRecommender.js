@@ -59,7 +59,22 @@ function recommendChart(input) {
     const seriesKeys = buildSeriesKeys(input.data, xAxis, yAxis);
     const xColumn = input.dataProfile.columns.find((column) => column.name === xAxis);
     const sliceCount = xColumn?.cardinality ?? input.dataProfile.rowCount;
-    const pieDisabled = sliceCount > 15;
+    const comparative = Array.isArray(seriesKeys) && seriesKeys.length > 1;
+    // Disable pie for high-cardinality, comparative (multi-series), or time-series (line) decisions
+    const pieDisabledByCount = sliceCount > 15;
+    const pieDisabledByComparative = comparative;
+    const pieDisabledByChartType = decision.type === 'line';
+    const pieDisabled = pieDisabledByCount || pieDisabledByComparative || pieDisabledByChartType;
+    let pieDisabledReason;
+    if (pieDisabledByCount) {
+        pieDisabledReason = `${sliceCount} categories — pie requires 15 or fewer`;
+    }
+    else if (pieDisabledByComparative) {
+        pieDisabledReason = `${(seriesKeys || []).length} series detected — pie is not suitable for multi-series comparisons`;
+    }
+    else if (pieDisabledByChartType) {
+        pieDisabledReason = 'Time-series data (line) — pie charts are not appropriate for trends';
+    }
     return {
         chartType: decision.type,
         xAxis,
@@ -69,7 +84,7 @@ function recommendChart(input) {
         densityWarning: decision.densityWarning,
         confidence: decision.overrideReason ? 'medium' : 'high',
         pieDisabled,
-        pieDisabledReason: pieDisabled ? `${sliceCount} categories — pie requires 15 or fewer` : undefined,
+        pieDisabledReason,
     };
 }
 function chooseXAxis(input) {

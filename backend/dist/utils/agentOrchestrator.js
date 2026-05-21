@@ -15,7 +15,7 @@ async function runAnalyticsPipeline(input) {
     const intentStart = Date.now();
     let intent;
     try {
-        intent = await (0, intentAgent_1.analyzeIntent)(input.userPrompt, input.previousContext);
+        intent = await (0, intentAgent_1.analyzeIntent)(input.userPrompt, input.previousContext, { sessionId: input.sessionId });
         timings.intentMs = Date.now() - intentStart;
         console.info('[Pipeline] Intent:', intent.intent, '| Tables:', intent.tables.join(', '));
     }
@@ -61,6 +61,7 @@ async function runAnalyticsPipeline(input) {
             userPrompt: input.userPrompt,
             intent,
             schema,
+            sessionId: input.sessionId,
             previousContext: input.previousContext,
         });
         timings.sqlGenMs = Date.now() - sqlGenStart;

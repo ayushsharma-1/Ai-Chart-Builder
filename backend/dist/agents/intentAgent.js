@@ -7,6 +7,7 @@ exports.buildIntentFallback = buildIntentFallback;
 exports.analyzeIntent = analyzeIntent;
 const zod_1 = require("zod");
 const groq_1 = __importDefault(require("../config/groq"));
+const aiMetricsLogger_1 = require("../utils/aiMetricsLogger");
 const promptTokens_1 = require("../utils/promptTokens");
 // Zod schema for structured output validation
 const FIXED_TIME_RANGES = ['last_7d', 'last_30d', 'last_90d', 'last_12m', 'this_month', 'this_year', 'all_time', 'custom'];
@@ -145,7 +146,11 @@ function buildIntentFallback(userPrompt) {
         intent: userPrompt,
     };
 }
-async function analyzeIntent(userPrompt, previousContext) {
+async function analyzeIntent(userPrompt, previousContext, options) {
+    const start = Date.now();
+    let usage;
+    let success = false;
+    let errorMessage;
     const parsedTimeRange = parseTimeRange(userPrompt);
     const contextLines = [];
     if (previousContext?.previousTitle || previousContext?.previousPrompt) {
@@ -158,34 +163,55 @@ async function analyzeIntent(userPrompt, previousContext) {
         'Identify which tables are needed and what the user wants to measure.',
     ].join('\n');
     // 3-second timeout to prevent pipeline stalls if intent agent hangs
-    const completion = await Promise.race([
-        groq_1.default.chat.completions.create({
-            model: 'llama-3.3-70b-versatile',
-            messages: [
-                // FROZEN system prompt goes first — maximizes token cache hit rate
-                { role: 'system', content: [FROZEN_INTENT_SYSTEM, TABLE_HINTS].join('\n\n') },
-                { role: 'user', content: userMessage },
-            ],
-            temperature: 0.1,
-            max_tokens: 300, // intent analysis is small
-            response_format: { type: 'json_object' },
-        }),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Intent agent timeout (3s)')), 3000)),
-    ]);
-    const raw = completion.choices[0]?.message?.content;
-    if (!raw)
-        throw new Error('Intent agent returned empty response');
-    // Parse JSON first (guaranteed by response_format)
-    const parsed = JSON.parse(raw);
-    // Then validate shape with Zod (catches missing/wrong-type fields)
-    const result = IntentAnalysisSchema.safeParse(parsed);
-    if (!result.success) {
-        console.warn('[IntentAgent] Zod validation failed, using fallback:', result.error.flatten());
-        return buildIntentFallback(userPrompt);
+    try {
+        const completion = await Promise.race([
+            groq_1.default.chat.completions.create({
+                model: 'llama-3.3-70b-versatile',
+                messages: [
+                    // FROZEN system prompt goes first — maximizes token cache hit rate
+                    { role: 'system', content: [FROZEN_INTENT_SYSTEM, TABLE_HINTS].join('\n\n') },
+                    { role: 'user', content: userMessage },
+                ],
+                temperature: 0.1,
+                max_tokens: 300, // intent analysis is small
+                response_format: { type: 'json_object' },
+            }),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Intent agent timeout (3s)')), 3000)),
+        ]);
+        usage = completion.usage;
+        const raw = completion.choices[0]?.message?.content;
+        if (!raw)
+            throw new Error('Intent agent returned empty response');
+        // Parse JSON first (guaranteed by response_format)
+        const parsed = JSON.parse(raw);
+        // Then validate shape with Zod (catches missing/wrong-type fields)
+        const result = IntentAnalysisSchema.safeParse(parsed);
+        if (!result.success) {
+            console.warn('[IntentAgent] Zod validation failed, using fallback:', result.error.flatten());
+            success = true;
+            return buildIntentFallback(userPrompt);
+        }
+        success = true;
+        return {
+            ...result.data,
+            timeRange: result.data.timeRange ?? parsedTimeRange?.normalizedTimeRange ?? null,
+            normalizedTimeRange: parsedTimeRange?.normalizedTimeRange || result.data.normalizedTimeRange || null,
+        };
     }
-    return {
-        ...result.data,
-        timeRange: result.data.timeRange ?? parsedTimeRange?.normalizedTimeRange ?? null,
-        normalizedTimeRange: parsedTimeRange?.normalizedTimeRange || result.data.normalizedTimeRange || null,
-    };
+    catch (err) {
+        errorMessage = err?.message || String(err);
+        throw err;
+    }
+    finally {
+        (0, aiMetricsLogger_1.logAICall)({
+            callType: 'intent_analysis',
+            model: 'llama-3.3-70b-versatile',
+            sessionId: options?.sessionId,
+            userPrompt,
+            success,
+            errorMessage,
+            latencyMs: Date.now() - start,
+            usage,
+        });
+    }
 }
