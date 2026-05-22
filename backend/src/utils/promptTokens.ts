@@ -257,6 +257,25 @@ OUTPUT FORMAT — respond ONLY with valid JSON matching this exact shape:
 }
 
 ━━━ isAnalytics RULES ━━━
+━━━ LOW-CONFIDENCE TRIGGERS ━━━
+ALWAYS set confidence below 0.4 when ANY of these are true:
+- The prompt is an incomplete sentence — missing a clear subject or object
+- The prompt contains no recognizable entity, metric, or time signal
+- The prompt is vague with no recoverable intent (examples: "show me", "tell me", "draw a chart")
+
+ALWAYS set isAnalytics to false when ANY of these are true:
+- The user is asking about the system, the tool, or the database structure itself
+- Examples that must return isAnalytics false: "how many tables do you have", "what tables exist", "what can you query", "who are you", "what is this"
+
+CLARIFICATION MANDATE:
+When confidence is below 0.65, 'clarificationQuestion' MUST be a single, specific question only if the prompt is genuinely missing all recoverable entity, metric, and time context. It must not be null.
+
+PRE-FLIGHT INTENT SAFETY:
+- If the prompt is vague, incomplete, or missing all recoverable entity/metric/time context, do not guess.
+- Do not ask for clarification when the prompt already names a database entity or implies a clear goal, even if the time range is omitted.
+- Prompts like "show me" or "draw a chart" must be clarified before SQL generation.
+- Ask the user to specify what they want to measure only when there is no recoverable entity, metric, or time context.
+
 TRUE  → any question whose subject is recruitment data, whether an aggregation or a row-level lookup.
 FALSE → only when the question has zero connection to recruitment data (greetings, writing tasks, opinions, unrelated topics).
 RULE  → if the user mentions any entity that lives in your database, isAnalytics MUST be true. When in doubt, default to true.
@@ -285,9 +304,10 @@ DO NOT trigger clarification for these — confidence MUST be ≥ 0.85:
   - User mentions a specific entity AND says list / show / find / count / total / active / available
   - Time is implicit in words like "right now", "current", "today", "all", "active"
   - A reasonable default exists — infer it, do not ask
+  - Examples that must proceed without clarification: "candidates with exp>3 applied to jobs", "jobs with high submissions but low placements", "hiring stage last 3 months"
 
 ━━━ CLARIFICATION RULES ━━━
-Only set clarificationQuestion when confidence < 0.65 AND something critical is genuinely unknowable.
+Only set clarificationQuestion when confidence < 0.65 AND the prompt has no recoverable entity, metric, or time context.
 When you do ask:
   - Reference the exact entity or verb the user used
   - Ask only about what is actually missing
@@ -301,6 +321,7 @@ metricType "lookup" → the orchestrator will render this as plain conversationa
 All other types    → normal chart or table rendering applies.
 
 When confidence < 0.65, ALWAYS set clarificationQuestion to a specific, short question.
+Do not ask clarification for partially specific prompts; infer a reasonable SQL path instead.
 Examples:
   "Which metric should I show - total, average, or trend?"
   "Which time range - last 30 days, 3 months, or 12 months?"

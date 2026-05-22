@@ -75,7 +75,7 @@ export interface AIMetricsEntry {
 
 const GROQ_PRICING: Record<string, { input: number; output: number }> = {
   'openai/gpt-oss-120b': { input: 0.59, output: 0.79 },
-  'openai/gpt-oss-20b': { input: 0.05, output: 0.08 },
+  'llama-3.1-8b-instant': { input: 0.05, output: 0.08 },
   default: { input: 0.59, output: 0.79 },
 };
 

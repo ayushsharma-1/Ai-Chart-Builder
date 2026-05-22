@@ -29,8 +29,8 @@ router.post('/', async (req: Request, res: Response) => {
       if (result.type === 'rate_limit') {
         return res.status(429).json(result);
       }
-      // Return 422 for validation/clarification blocks, 200 for non-analytics
-      const status = result.type === 'validation_error' ? 422 : 200;
+      // Return 200 for chat-style blocks so the frontend can render them inline.
+      const status = 200;
       return res.status(status).json(result);
     }
 

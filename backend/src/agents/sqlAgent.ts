@@ -589,7 +589,7 @@ export async function generateSqlFromAgent(input: SqlAgentInput): Promise<ChartA
           { role: 'user', content: userMessage },
         ],
         temperature: 0.1,
-        max_tokens: 1200,
+        max_tokens: 1800,
         response_format: { type: 'json_object' },
       });
 

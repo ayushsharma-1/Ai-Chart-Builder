@@ -137,13 +137,18 @@ async function generateAgentSql(
       return { error: { success: false, type: 'rate_limit', message: err.message || String(err) } as OrchestratorError };
     }
 
-    const isValidation = err.message?.includes('validation failed') || err.message?.includes('Query blocked');
+    const isValidation =
+      err.message?.includes('validation failed') ||
+      err.message?.includes('Query blocked') ||
+      err.message?.includes('invalid response structure') ||
+      err.message?.includes('returned empty response') ||
+      err.message?.includes('JSON');
     return {
       error: {
         success: false,
         type: isValidation ? 'validation_error' : 'error',
         message: isValidation
-          ? 'I generated a query that our security system blocked. Please try rephrasing.'
+          ? 'I could not read that query cleanly. Please simplify your prompt and try again.'
           : 'Something went wrong generating your query. Please try again.',
       } as OrchestratorError,
     };

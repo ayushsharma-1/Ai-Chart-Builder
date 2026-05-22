@@ -204,6 +204,63 @@ function buildClarificationQuestion(userPrompt: string): string {
   return 'What would you like me to look up or summarize?';
 }
 
+function buildVagueClarificationQuestion(): string {
+  return 'What would you like to analyze, which entity should I use, and what time range?';
+}
+
+function includesAnyPhrase(text: string, phrases: string[]): boolean {
+  return phrases.some((phrase) => text.includes(phrase));
+}
+
+function hasEntitySignal(normalized: string): boolean {
+  return includesAnyPhrase(normalized, [
+    'job', 'jobs', 'hiring', 'hiring role', 'opening', 'openings', 'requisition', 'requisitions',
+    'candidate', 'candidates', 'applicant', 'applicants', 'talent', 'recruiter', 'recruiters',
+    'deal', 'deals', 'revenue', 'billing', 'assignment', 'assignments', 'pipeline', 'placement', 'funnel',
+  ]);
+}
+
+function hasMetricSignal(normalized: string): boolean {
+  return includesAnyPhrase(normalized, [
+    'total', 'count', 'how many', 'average', 'avg', 'mean', 'trend', 'compare', 'comparison',
+    'growth', 'variance', 'sum', 'ratio', 'top', 'most', 'least', 'highest', 'lowest', 'chart',
+    'charting', 'distribution', 'breakdown', 'revenue', 'billing', 'applicants', 'placements',
+    'submitted', 'interview', 'offered', 'placed',
+  ]);
+}
+
+function hasTimeSignal(normalized: string): boolean {
+  return includesAnyPhrase(normalized, [
+    'time', 'month', 'week', 'year', 'recent', 'latest', 'last', 'right now', 'now', 'current',
+    'today', 'yesterday', 'active', 'open', 'closed', 'this month', 'this year', 'last 30 days',
+    'last 3 months', 'last 12 months', 'last 7 days', 'last 90 days', 'last 6 months',
+  ]);
+}
+
+function isMetaSystemQuestion(normalized: string): boolean {
+  return [
+    'how many tables',
+    'what tables',
+    'what databases',
+    'what can you',
+    'who are you',
+    'what is this',
+    'list tables',
+    'show tables',
+    'describe',
+  ].some((phrase) => normalized.includes(phrase));
+}
+
+function shouldClarifyBeforeLLM(userPrompt: string): boolean {
+  const normalized = userPrompt.toLowerCase();
+
+  const entity = hasEntitySignal(normalized);
+  const metric = hasMetricSignal(normalized);
+  const time = hasTimeSignal(normalized);
+
+  return !entity && !metric && !time;
+}
+
 function estimateConfidence(userPrompt: string): { confidence: number; confidenceReason: string | null; clarificationQuestion: string | null } {
   const normalized = userPrompt.toLowerCase();
   const hasJobEntity = /\b(job|jobs|hiring|hiring role|opening|openings|requisition|requisitions)\b/i.test(normalized);
@@ -288,7 +345,29 @@ export function buildIntentFallback(userPrompt: string): IntentAnalysis {
 function hasAnalyticalSignals(userPrompt: string): boolean {
   const normalized = userPrompt.toLowerCase();
 
-  return /\b(top\s*\d+|top|per|group by|based on|rank|ranking|average|avg|mean|sum|total|count|trend|distribution|stddev|standard deviation|variance|outlier|deviation)\b/.test(normalized);
+  const patterns = [
+    /\btop\s*\d+/,
+    /\btop\b/,
+    /\bper\b/,
+    /\bgroup by\b/,
+    /\bbased on\b/,
+    /\brank(ing)?\b/,
+    /\baverage\b/,
+    /\bavg\b/,
+    /\bmean\b/,
+    /\bsum\b/,
+    /\btotal\b/,
+    /\bcount\b/,
+    /\btrend\b/,
+    /\bdistribution\b/,
+    /\bstddev\b/,
+    /\bstandard deviation\b/,
+    /\bvariance\b/,
+    /\boutlier\b/,
+    /\bdeviation\b/,
+  ];
+
+  return patterns.some((r) => r.test(normalized));
 }
 
 function coerceIntentForChartability(intent: IntentAnalysis, userPrompt: string): IntentAnalysis {
@@ -335,11 +414,79 @@ export async function analyzeIntent(
     'Identify which tables are needed and what the user wants to measure.',
   ].join('\n');
 
+  // Pre-flight checks (zero-token) — catch obvious short or meta-system prompts
+  const normalizedPrompt = (userPrompt || '').toLowerCase();
+
+  if (isMetaSystemQuestion(normalizedPrompt)) {
+    const resp: IntentAnalysis = {
+      tables: [],
+      metricType: 'lookup',
+      timeRange: null,
+      normalizedTimeRange: null,
+      dimensions: [],
+      isAnalytics: false,
+      needsClarification: null,
+      chartHint: 'none',
+      intent: userPrompt,
+      confidence: 0.95,
+      confidenceReason: 'Pre-flight: detected meta/system question',
+      clarificationQuestion: null,
+    };
+
+    logAICall({
+      callType: 'intent_analysis',
+      model: 'none',
+      sessionId: options?.sessionId,
+      userPrompt,
+      success: true,
+      errorMessage: undefined,
+      latencyMs: Date.now() - start,
+      usage: undefined,
+    });
+
+    return resp;
+  }
+
+  if (shouldClarifyBeforeLLM(userPrompt)) {
+    const clarificationQuestion = buildVagueClarificationQuestion();
+    const hasEntity = hasEntitySignal(normalizedPrompt);
+    const hasMetric = hasMetricSignal(normalizedPrompt);
+    const hasTime = hasTimeSignal(normalizedPrompt);
+
+    const preflightResp: IntentAnalysis = {
+      tables: [],
+      metricType: 'lookup',
+      timeRange: null,
+      normalizedTimeRange: null,
+      dimensions: [],
+      isAnalytics: true,
+      needsClarification: null,
+      chartHint: 'none',
+      intent: userPrompt,
+      confidence: 0.1,
+      confidenceReason: !hasEntity || !hasMetric || !hasTime ? 'Pre-flight: prompt missing entity, metric, or time range' : 'Pre-flight: prompt too short',
+      clarificationQuestion,
+    };
+
+    logAICall({
+      callType: 'intent_analysis',
+      model: 'none',
+      sessionId: options?.sessionId,
+      userPrompt,
+      success: true,
+      errorMessage: undefined,
+      latencyMs: Date.now() - start,
+      usage: undefined,
+    });
+
+    return preflightResp;
+  }
+
   // 6-second timeout to prevent pipeline stalls if intent agent hangs
   try {
     const completion = await Promise.race([
       groq.chat.completions.create({
-        model: 'openai/gpt-oss-20b',
+        model: 'llama-3.1-8b-instant',
         messages: [
           // FROZEN system prompt goes first — maximizes token cache hit rate
           { role: 'system', content: [FROZEN_INTENT_SYSTEM, TABLE_HINTS].join('\n\n') },
@@ -384,7 +531,7 @@ export async function analyzeIntent(
   } finally {
     logAICall({
       callType: 'intent_analysis',
-      model: 'openai/gpt-oss-20b',
+      model: 'llama-3.1-8b-instant',
       sessionId: options?.sessionId,
       userPrompt,
       success,

@@ -199,24 +199,18 @@ export function buildAxisLabel(
   assignments: Record<string, 'left' | 'right'>,
   side: 'left' | 'right'
 ): string {
-  const sideLabel = side === 'left' ? 'Left axis' : 'Right axis';
   const labels = seriesKeys
     .filter((key) => assignments[key] === side)
     .map((key) => formatAxisMetricLabel(key))
     .filter(Boolean);
+  if (labels.length === 0) return '';
 
-  if (labels.length === 0) {
-    return sideLabel;
-  }
-
-  if (labels.length === 1) {
-    return `${sideLabel}: ${labels[0]}`;
-  }
+  if (labels.length === 1) return labels[0];
 
   const visibleLabels = labels.slice(0, 2).join(', ');
   const remaining = labels.length - 2;
 
-  return `${sideLabel}: ${visibleLabels}${remaining > 0 ? ` +${remaining}` : ''}`;
+  return `${visibleLabels}${remaining > 0 ? ` +${remaining}` : ''}`;
 }
 
 /**
