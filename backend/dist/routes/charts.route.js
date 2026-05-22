@@ -5,11 +5,50 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const node_crypto_1 = require("node:crypto");
+const zod_1 = require("zod");
 const chart_service_1 = require("../services/chart.service");
 const llm_service_1 = require("../services/llm.service");
 const Chart_1 = __importDefault(require("../models/Chart"));
 const sql_service_1 = require("../services/sql.service");
 const router = (0, express_1.Router)();
+const SaveChartSchema = zod_1.z.object({
+    title: zod_1.z.string().trim().min(1, 'title is required'),
+    prompt: zod_1.z.string().trim().min(1, 'prompt is required'),
+    sql: zod_1.z.string().trim().min(1, 'sql is required'),
+    chartType: zod_1.z.enum(['bar', 'line', 'pie', 'table']),
+    chartConfig: zod_1.z.object({
+        xAxis: zod_1.z.string().trim().min(1, 'chartConfig.xAxis is required'),
+        yAxis: zod_1.z.union([zod_1.z.string().trim().min(1), zod_1.z.array(zod_1.z.string().trim().min(1)).min(1)]),
+        dataKey: zod_1.z.string().optional(),
+        seriesKeys: zod_1.z.array(zod_1.z.string().trim().min(1)).optional(),
+    }),
+    reasoning: zod_1.z.string().optional(),
+    aiExplanation: zod_1.z.string().optional(),
+    queryConfidence: zod_1.z.any().optional(),
+    metricLineage: zod_1.z.any().optional(),
+    chartOverrideReason: zod_1.z.string().optional(),
+    chartConfidence: zod_1.z.enum(['high', 'medium', 'low']).optional(),
+    dataSnapshot: zod_1.z.array(zod_1.z.any()).optional(),
+    executionMetadata: zod_1.z.any().optional(),
+    gridPosition: zod_1.z.any().optional(),
+});
+function handleChartRouteError(res, error, fallback) {
+    const err = error;
+    const isValidation = err?.name === 'ZodError';
+    const isMongooseValidation = err?.name === 'ValidationError';
+    let message = err?.message || fallback;
+    if (isValidation) {
+        message = 'Invalid chart payload.';
+    }
+    else if (isMongooseValidation) {
+        message = err?.message || 'Chart payload failed validation.';
+    }
+    console.error('Chart route error:', err?.message || err);
+    return res.status(isValidation || isMongooseValidation ? 400 : 500).json({
+        success: false,
+        message,
+    });
+}
 router.get('/', async (_req, res) => {
     try {
         const charts = await (0, chart_service_1.getAllCharts)();
@@ -22,12 +61,12 @@ router.get('/', async (_req, res) => {
 });
 router.post('/', async (req, res) => {
     try {
-        const chart = await (0, chart_service_1.saveChart)(req.body);
+        const payload = SaveChartSchema.parse(req.body);
+        const chart = await (0, chart_service_1.saveChart)(payload);
         res.json({ success: true, chart });
     }
     catch (err) {
-        console.error('Chart save error:', err?.message || err);
-        res.status(500).json({ success: false, message: 'Unable to save chart.' });
+        return handleChartRouteError(res, err, 'Unable to save chart.');
     }
 });
 router.get('/:id', async (req, res) => {

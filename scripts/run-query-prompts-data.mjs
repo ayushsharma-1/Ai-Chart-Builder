@@ -212,7 +212,7 @@ export const PROMPTS = [
   "Identify jobs where placements happened without corresponding active deals and flag them as anomalies.",
   "Compare placement success rates between recruiters handling high-volume jobs vs low-volume jobs.",
   "Show cumulative recruiter placement revenue over time using running total window functions.",
-  "Find recruiters with the highest dependency on a single company for placement revenue.",
+  "Find recruiters with the highest single-company revenue dependency, using max company revenue divided by total recruiter revenue.",
   "Show candidate lifecycle analytics: submission date, first interview date, offer date, placement date, total lifecycle duration.",
   "Return recruiter rankings based on weighted score: 40% placements, 40% revenue, 20% conversion rate.",
   "Show monthly recruiter-wise placement trends for the last 18 months along with total billed revenue and conversion rate.",

@@ -1,18 +1,35 @@
 import Chart, { IChart } from '../models/Chart';
 import { buildChartExplainability } from '../utils/chartExplainability';
 
+function normalizeChartConfig(payload: Partial<IChart>) {
+  const rawYAxis = payload.chartConfig?.yAxis;
+  const yAxisList = Array.isArray(rawYAxis)
+    ? rawYAxis.filter(Boolean)
+    : [rawYAxis].filter(Boolean);
+  const primaryYAxis = yAxisList[0] || '';
+  const seriesKeys = payload.chartConfig?.seriesKeys?.length ? payload.chartConfig.seriesKeys : yAxisList.slice(0, 1);
+
+  return {
+    ...payload.chartConfig,
+    yAxis: primaryYAxis,
+    seriesKeys,
+  };
+}
+
 function withExplainability(payload: Partial<IChart>) {
+  const chartConfig = payload.chartConfig ? normalizeChartConfig(payload) : payload.chartConfig;
   const explainability = buildChartExplainability({
     title: payload.title,
     prompt: payload.prompt,
     sql: payload.sql,
     reasoning: payload.reasoning,
     chartType: payload.chartType,
-    chartConfig: payload.chartConfig,
+    chartConfig,
   });
 
   return {
     ...payload,
+    chartConfig,
     aiExplanation: payload.aiExplanation || explainability.aiExplanation,
     queryConfidence: payload.queryConfidence || explainability.queryConfidence,
     metricLineage: payload.metricLineage || explainability.metricLineage,

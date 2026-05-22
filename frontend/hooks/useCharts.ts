@@ -5,6 +5,20 @@ import { useCallback, useEffect, useState } from 'react';
 import api from '@/lib/api';
 import { ChartResult, ChartType, SavedChart } from '@/types';
 
+function normalizeChartConfig(result: ChartResult) {
+  const yAxisList = Array.isArray(result.chartConfig.yAxis)
+    ? result.chartConfig.yAxis.filter(Boolean)
+    : [result.chartConfig.yAxis].filter(Boolean);
+  const primaryYAxis = yAxisList[0] || '';
+  const seriesKeys = result.chartConfig.seriesKeys?.length ? result.chartConfig.seriesKeys : yAxisList.slice(0, 1);
+
+  return {
+    ...result.chartConfig,
+    yAxis: primaryYAxis,
+    seriesKeys,
+  };
+}
+
 export function useCharts() {
   const [savedCharts, setSavedCharts] = useState<SavedChart[]>([]);
 
@@ -18,6 +32,7 @@ export function useCharts() {
   }, [fetchCharts]);
 
   const saveChart = useCallback(async (result: ChartResult, overrideType?: ChartType, reportId?: string) => {
+    const chartConfig = normalizeChartConfig(result);
     const payload = {
       title: result.title,
       prompt: result.prompt || result.title,
@@ -29,7 +44,7 @@ export function useCharts() {
       chartType: overrideType || result.chartType,
       chartOverrideReason: result.chartOverrideReason || '',
       chartConfidence: result.chartConfidence,
-      chartConfig: result.chartConfig,
+      chartConfig,
       dataSnapshot: result.data,
       executionMetadata: result.executionMetadata || {
         rowCount: result.rowCount,

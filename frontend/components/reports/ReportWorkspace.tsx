@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, Copy, Eye, FileText, Lock, Plus, RotateCcw, Save, Search, Share2, X } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -8,6 +8,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import api from '@/lib/api';
 import { useCharts } from '@/hooks/useCharts';
 import { useReport } from '@/hooks/useReports';
+import { useSaveChart } from '@/hooks/useSaveChart';
 import { ChartType, Report, ReportRefreshResult, SavedChart } from '@/types';
 
 import ChartExplainabilityPanel from './ChartExplainabilityPanel';
@@ -35,7 +36,6 @@ export default function ReportWorkspace({ reportId, mode }: Props) {
   const { report, isLoading, error, setReport, updateReport, addChart, updateLayout, refresh, generateInsights, share, fetchReport } = useReport(reportId, { mode, shareToken });
   const { savedCharts, fetchCharts } = useCharts();
   const [selectedChart, setSelectedChart] = useState<SavedChart | null>(null);
-  const [isSavingTitle, setIsSavingTitle] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isGeneratingInsights, setIsGeneratingInsights] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
@@ -45,6 +45,22 @@ export default function ReportWorkspace({ reportId, mode }: Props) {
   const [chartSearch, setChartSearch] = useState('');
   const [addingChartId, setAddingChartId] = useState<string | null>(null);
   const [refreshResults, setRefreshResults] = useState<ReportRefreshResult[]>([]);
+  const {
+    runSave: saveReportTitle,
+    isSaving: isSavingTitle,
+    isSaved: titleSaved,
+    error: titleSaveError,
+    reset: resetTitleSaveState,
+  } = useSaveChart(async () => {
+    await updateReport({
+      title: draftTitle.trim() || report.title,
+      description: draftDescription,
+    });
+  });
+
+  useEffect(() => {
+    resetTitleSaveState();
+  }, [draftTitle, draftDescription, report._id, resetTitleSaveState]);
 
   const availableCharts = useMemo(() => {
     const attachedIds = new Set((report?.charts || []).map((chart) => chart._id));
@@ -76,17 +92,18 @@ export default function ReportWorkspace({ reportId, mode }: Props) {
 
   const handleTitleSave = async () => {
     if (readOnly) return;
-    setIsSavingTitle(true);
-
-    try {
-      await updateReport({
-        title: draftTitle.trim() || report.title,
-        description: draftDescription,
-      });
-    } finally {
-      setIsSavingTitle(false);
-    }
+    await saveReportTitle();
   };
+
+  let titleSaveButtonLabel = 'Save';
+
+  if (titleSaveError) {
+    titleSaveButtonLabel = 'Save failed';
+  } else if (isSavingTitle) {
+    titleSaveButtonLabel = 'Saving';
+  } else if (titleSaved) {
+    titleSaveButtonLabel = 'Saved';
+  }
 
   const handleLayoutCommit = async (layout: Array<{ chartId: string; gridPosition: SavedChart['gridPosition'] }>) => {
     if (readOnly || layout.length === 0) {
@@ -266,7 +283,7 @@ export default function ReportWorkspace({ reportId, mode }: Props) {
                   </button>
                   {showChartPicker && (
                     <div className="absolute right-0 top-11 z-40 w-[360px] rounded-lg border border-[#1E1E2E] bg-[#0D0D13] p-3 shadow-2xl">
-                      <div className="mb-3 flex items-center gap-2 rounded-lg border border-[#1E1E2E] bg-[#111118] px-3 py-2">
+                    disabled={isSavingTitle || titleSaved}
                         <Search size={14} className="text-[#7B7B9A]" />
                         <input
                           value={chartSearch}
@@ -308,13 +325,14 @@ export default function ReportWorkspace({ reportId, mode }: Props) {
                 </div>
                 <button
                   type="button"
-                  onClick={handleTitleSave}
+                  onClick={() => void handleTitleSave()}
                   disabled={isSavingTitle}
                   className="flex items-center gap-2 rounded-lg border border-[#1E1E2E] px-3 py-2 text-sm font-medium text-[#F0F0FF] transition-colors hover:bg-[#16161F] disabled:opacity-50"
                 >
                   <Save size={14} />
-                  Save
+                  {titleSaveButtonLabel}
                 </button>
+                {titleSaveError && <p className="w-full text-xs text-[#F87171]">{titleSaveError}</p>}
                 <button
                   type="button"
                   onClick={handleRefresh}

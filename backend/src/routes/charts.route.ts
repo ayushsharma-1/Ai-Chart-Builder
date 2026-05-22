@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { randomUUID } from 'node:crypto';
+import { z } from 'zod';
 
 import { deleteChart, duplicateChart, getAllCharts, getChart, saveChart, updateChart, updateChartPosition } from '../services/chart.service';
 import { generateSqlExplanation } from '../services/llm.service';
@@ -7,6 +8,48 @@ import Chart from '../models/Chart';
 import { runQuery } from '../services/sql.service';
 
 const router = Router();
+
+const SaveChartSchema = z.object({
+  title: z.string().trim().min(1, 'title is required'),
+  prompt: z.string().trim().min(1, 'prompt is required'),
+  sql: z.string().trim().min(1, 'sql is required'),
+  chartType: z.enum(['bar', 'line', 'pie', 'table']),
+  chartConfig: z.object({
+    xAxis: z.string().trim().min(1, 'chartConfig.xAxis is required'),
+    yAxis: z.union([z.string().trim().min(1), z.array(z.string().trim().min(1)).min(1)]),
+    dataKey: z.string().optional(),
+    seriesKeys: z.array(z.string().trim().min(1)).optional(),
+  }),
+  reasoning: z.string().optional(),
+  aiExplanation: z.string().optional(),
+  queryConfidence: z.any().optional(),
+  metricLineage: z.any().optional(),
+  chartOverrideReason: z.string().optional(),
+  chartConfidence: z.enum(['high', 'medium', 'low']).optional(),
+  dataSnapshot: z.array(z.any()).optional(),
+  executionMetadata: z.any().optional(),
+  gridPosition: z.any().optional(),
+});
+
+function handleChartRouteError(res: Response, error: unknown, fallback: string) {
+  const err = error as any;
+  const isValidation = err?.name === 'ZodError';
+  const isMongooseValidation = err?.name === 'ValidationError';
+  let message = err?.message || fallback;
+
+  if (isValidation) {
+    message = 'Invalid chart payload.';
+  } else if (isMongooseValidation) {
+    message = err?.message || 'Chart payload failed validation.';
+  }
+
+  console.error('Chart route error:', err?.message || err);
+
+  return res.status(isValidation || isMongooseValidation ? 400 : 500).json({
+    success: false,
+    message,
+  });
+}
 
 router.get('/', async (_req: Request, res: Response) => {
   try {
@@ -20,11 +63,11 @@ router.get('/', async (_req: Request, res: Response) => {
 
 router.post('/', async (req: Request, res: Response) => {
   try {
-    const chart = await saveChart(req.body);
+    const payload = SaveChartSchema.parse(req.body);
+    const chart = await saveChart(payload);
     res.json({ success: true, chart });
   } catch (err: any) {
-    console.error('Chart save error:', err?.message || err);
-    res.status(500).json({ success: false, message: 'Unable to save chart.' });
+    return handleChartRouteError(res, err, 'Unable to save chart.');
   }
 });
 

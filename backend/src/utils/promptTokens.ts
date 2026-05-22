@@ -22,7 +22,8 @@ You never generate write operations, never access system tables, and never expos
 
 export const FROZEN_SQL_RULES = `
 CORE SQL RULES (read-only, MySQL 8.0):
-1. Generate ONLY single SELECT queries for simple lookups. For analytical comparisons (trend analysis, month-over-month, variance, ranking, or aggregate-vs-aggregate comparisons), always use multi-stage queries: prefer CTEs (WITH) or derived tables (subqueries) to aggregate at the required grain first, then perform comparisons in an outer query. If your environment disallows CTEs, use a derived table instead.
+STRICT RULE — NEVER use: CTEs (WITH), window functions (ROW_NUMBER(), RANK(), DENSE_RANK(), SUM() OVER, PARTITION BY). For top-N per group, use a correlated subquery with GROUP BY + HAVING. For running totals or ratios, use a self-join subquery. Violation of this rule will cause query rejection.
+1. Generate ONLY single SELECT queries for simple lookups. For analytical comparisons (trend analysis, month-over-month, variance, ranking, or aggregate-vs-aggregate comparisons), always use multi-stage queries with derived tables (subqueries) to aggregate at the required grain first, then perform comparisons in an outer query. Do not use CTEs.
 2. Always explicitly SELECT named columns. Never use SELECT *. Do not include any SQL comments.
 3. All timestamps are UNIX integers. Always wrap with FROM_UNIXTIME() before date formatting or arithmetic.
 4. For grouped date dimensions, repeat the full expression in GROUP BY. Never use SELECT aliases in GROUP BY.
@@ -34,7 +35,7 @@ CORE SQL RULES (read-only, MySQL 8.0):
 10. dealvalue is DECIMAL — no sanitization needed.
 11. In JOIN queries, always explicitly prefix columns with their correct table alias. Validate ownership before assigning an alias: e.g. 'name' belongs to tbljob, not tblassignjobcandidate.
 12. Build aliases deterministically before writing JOINs. Never use generic aliases like t1, t2, t3. Prefer schema-aware aliases such as job, assignment, candidate, and deal.
-13. CTE (WITH clause) RULES: CTEs are allowed and encouraged for complex analytics. CTE names are internal aliases only, not database tables. Only the base tables tblcandidate, tblassignjobcandidate, tbldeals, and tbljob may appear in FROM/JOIN inside the CTEs themselves.
+13. CTE (WITH clause) RULES: Do not use CTEs in generated SQL. Rewrite any multi-stage query as a derived table or correlated subquery instead.
 14. ORDER BY RULE: Only ORDER BY a column that is declared as a SELECT alias or a full SQL expression. Never ORDER BY a computed name that is not projected in SELECT.
 ====== HARD CONSTRAINTS — NEVER VIOLATE ======
 tblcandidate: ALWAYS add AND deleted = 0 to WHERE clause
@@ -136,34 +137,11 @@ FILTER RULES (absolute, no exceptions):
 `.trim();
 
 export const FROZEN_WINDOW_FUNCTION_RULES = `
-WINDOW FUNCTION RULES (critical - violations cause ONLY_FULL_GROUP_BY errors):
-
-Pattern: cumulative / running total / ROW_NUMBER / DENSE_RANK / PARTITION BY
-- NEVER mix window functions with GROUP BY in the same SELECT level.
-- Always compute aggregations in a CTE first, then apply window functions in the outer query.
-
-WRONG (causes ONLY_FULL_GROUP_BY failure):
-  SELECT owner, COUNT(*) AS placements,
-    SUM(COUNT(*)) OVER (PARTITION BY owner ORDER BY month) AS running_total
-  FROM tblassignjobcandidate GROUP BY owner, month
-
-CORRECT (CTE pattern - always use this):
-  WITH monthly AS (
-    SELECT ownerid,
-      DATE_FORMAT(FROM_UNIXTIME(createdon),'%Y-%m') AS month,
-      COUNT(*) AS placements
-    FROM tblassignjobcandidate
-    GROUP BY ownerid, DATE_FORMAT(FROM_UNIXTIME(createdon),'%Y-%m')
-  )
-  SELECT ownerid, month, placements,
-    SUM(placements) OVER (PARTITION BY ownerid ORDER BY month) AS running_total
-  FROM monthly
-  ORDER BY ownerid, month
-
-RULE: If the prompt contains any of these words:
-  cumulative, running total, rolling, YoY, quarter-over-quarter,
-  month-over-month, ROW_NUMBER, DENSE_RANK, RANK, PARTITION BY, LAG, LEAD
--> ALWAYS use CTE pattern. Never attempt GROUP BY + window in same SELECT.
+WINDOW FUNCTION RULES (critical - violations cause query rejection):
+- Never use CTEs (WITH), window functions (ROW_NUMBER(), RANK(), DENSE_RANK(), SUM() OVER, PARTITION BY), or OVER clauses in generated SQL.
+- For top-N per group, use a correlated subquery with GROUP BY + HAVING.
+- For running totals or ratios, use a self-join subquery.
+- If the prompt mentions cumulative, running total, rolling, YoY, quarter-over-quarter, month-over-month, ROW_NUMBER, DENSE_RANK, RANK, PARTITION BY, LAG, or LEAD, keep the solution flat and rewrite it without window functions.
 `.trim();
 
 export const FROZEN_ALLOWED_FUNCTIONS = `

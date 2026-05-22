@@ -214,11 +214,13 @@ function buildPromptSpecificConstraints(userPrompt: string): string[] {
 
   const asksTopNPerGroup = /\b(top\s*\d+|top)\b/.test(normalizedPrompt) && /\bper\b/.test(normalizedPrompt);
   const mentionsWindow = /\brow_number|dense_rank|rank\s*\(|over\s*\(/.test(normalizedPrompt);
+  const asksDependencyRatio = /highest dependency on a single company|single company.*revenue|revenue dependency|revenue share|ratio/i.test(normalizedPrompt);
 
-  if (asksTopNPerGroup || mentionsWindow) {
-    constraints.push('Do not use window functions (ROW_NUMBER, RANK, DENSE_RANK, OVER).');
-    constraints.push('Use nested subqueries with GROUP BY to pre-aggregate metrics, then filter top-N per group via correlated subquery logic.');
-    constraints.push('Do not use WITH clauses for this query; use plain nested SELECT subqueries.');
+  if (asksTopNPerGroup || mentionsWindow || asksDependencyRatio) {
+    constraints.push('Do not use CTEs (WITH), window functions (ROW_NUMBER, RANK, DENSE_RANK, OVER), or PARTITION BY.');
+    constraints.push('Use flat subqueries only: pre-aggregate metrics in one subquery, then join or filter with correlated subquery logic.');
+    constraints.push('For top-N per group, use GROUP BY + HAVING with a correlated subquery.');
+    constraints.push('For running totals or ratios, use a self-join subquery.');
   }
 
   const asksStdDevOutlier = /\bstandard deviation|stddev|deviation|2\s*standard\s*deviations?\b/.test(normalizedPrompt);
@@ -297,7 +299,7 @@ function fixOrderByAliases(sql: string): string {
 }
 
 function detectWindowFunctionMisuse(sql: string): boolean {
-  return /\bover\s*\(/i.test(sql);
+  return /\bwith\b/i.test(sql) || /\bover\s*\(/i.test(sql);
 }
 
 function logSqlAgentEvent(input: SqlAgentInput, payload: {
@@ -705,7 +707,7 @@ export async function generateSqlFromAgent(input: SqlAgentInput): Promise<ChartA
       let issues = collectValidationIssues(response.sql);
 
       if (detectWindowFunctionMisuse(currentSql)) {
-        issues.push('Window functions are not allowed for chart SQL generation; rewrite using grouped subqueries and correlated filtering for top-N logic.');
+        issues.push('CTEs and window functions are not allowed for chart SQL generation; rewrite using flat subqueries, correlated filtering, or self-joins.');
       }
 
       if (missingColumns.length > 0) {

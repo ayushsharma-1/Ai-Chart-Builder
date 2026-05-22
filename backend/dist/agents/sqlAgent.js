@@ -200,11 +200,7 @@ function fixOrderByAliases(sql) {
     });
 }
 function detectWindowFunctionMisuse(sql) {
-    const hasWindow = /\b(over)\s*\(/i.test(sql);
-    const hasWith = /\bwith\b\s+/i.test(sql);
-    if (hasWindow && !hasWith)
-        return true; // require WITH aggregated staging
-    return false;
+    return /\bwith\b/i.test(sql) || /\bover\s*\(/i.test(sql);
 }
 function logSqlAgentEvent(input, payload) {
     (0, aiMetricsLogger_1.logAICall)({
@@ -523,7 +519,7 @@ async function generateSqlFromAgent(input) {
         }
         let issues = collectValidationIssues(response.sql);
         if (detectWindowFunctionMisuse(currentSql)) {
-            issues.push('Window function used without aggregated staging; wrap base aggregation in a CTE and apply window functions in an outer query.');
+            issues.push('CTEs and window functions are not allowed for chart SQL generation; rewrite using flat subqueries, correlated filtering, or self-joins.');
         }
         if (missingColumns.length > 0) {
             const missingSoftDeletes = missingColumns.filter((m) => ['deleted', 'archived'].includes(m.column));

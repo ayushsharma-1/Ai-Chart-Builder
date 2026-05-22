@@ -14,17 +14,32 @@ exports.attachChartToReport = attachChartToReport;
 exports.detachChartFromReport = detachChartFromReport;
 const Chart_1 = __importDefault(require("../models/Chart"));
 const chartExplainability_1 = require("../utils/chartExplainability");
+function normalizeChartConfig(payload) {
+    const rawYAxis = payload.chartConfig?.yAxis;
+    const yAxisList = Array.isArray(rawYAxis)
+        ? rawYAxis.filter(Boolean)
+        : [rawYAxis].filter(Boolean);
+    const primaryYAxis = yAxisList[0] || '';
+    const seriesKeys = payload.chartConfig?.seriesKeys?.length ? payload.chartConfig.seriesKeys : yAxisList.slice(0, 1);
+    return {
+        ...payload.chartConfig,
+        yAxis: primaryYAxis,
+        seriesKeys,
+    };
+}
 function withExplainability(payload) {
+    const chartConfig = payload.chartConfig ? normalizeChartConfig(payload) : payload.chartConfig;
     const explainability = (0, chartExplainability_1.buildChartExplainability)({
         title: payload.title,
         prompt: payload.prompt,
         sql: payload.sql,
         reasoning: payload.reasoning,
         chartType: payload.chartType,
-        chartConfig: payload.chartConfig,
+        chartConfig,
     });
     return {
         ...payload,
+        chartConfig,
         aiExplanation: payload.aiExplanation || explainability.aiExplanation,
         queryConfidence: payload.queryConfidence || explainability.queryConfidence,
         metricLineage: payload.metricLineage || explainability.metricLineage,

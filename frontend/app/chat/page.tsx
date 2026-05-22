@@ -11,8 +11,8 @@ export default function ChatPage() {
   const { sessions, activeSession, activeSessionId, messages, isLoading, sendPrompt, newChat, selectChat, deleteChat } = useQuery();
   const { saveChart } = useCharts();
 
-  const handleSave = (result: any, type: ChartType) => {
-    saveChart(result, type);
+  const handleSave = async (result: any, type: ChartType) => {
+    await saveChart(result, type);
   };
 
   return (

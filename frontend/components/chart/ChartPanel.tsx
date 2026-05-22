@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 
 import { ChartResult, ChartType } from '@/types';
 import { Bookmark, Clock, Database, Info } from 'lucide-react';
+import { useSaveChart } from '@/hooks/useSaveChart';
 
 import EmptyState from '../ui/EmptyState';
 import ChartRenderer from './ChartRenderer';
@@ -11,13 +12,19 @@ import ChartTypeSwitcher from './ChartTypeSwitcher';
 
 interface Props {
   readonly chart: ChartResult | null;
-  readonly onSave: (result: ChartResult, type: ChartType) => void;
+  readonly onSave: (result: ChartResult, type: ChartType) => Promise<void>;
 }
 
 export default function ChartPanel(props: Props) {
   const { chart, onSave } = props;
   const [activeType, setActiveType] = useState<ChartType>('bar');
-  const [saved, setSaved] = useState(false);
+  const { runSave, isSaving, isSaved, error, reset } = useSaveChart(async () => {
+    if (!chart) {
+      throw new Error('No chart is available to save.');
+    }
+
+    return onSave(chart, activeType);
+  });
 
   useEffect(() => {
     if (chart?.chartType) {
@@ -25,15 +32,30 @@ export default function ChartPanel(props: Props) {
     }
   }, [chart]);
 
-  const handleSave = () => {
+  useEffect(() => {
+    reset();
+  }, [activeType, chart?._id, reset]);
+
+  const handleSave = async () => {
     if (!chart) {
       return;
     }
 
-    onSave(chart, activeType);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    await runSave();
   };
+
+  let saveButtonLabel = 'Save';
+  let saveButtonClassName = 'bg-[#6366F1]/10 text-[#6366F1] border border-[#6366F1]/30 hover:bg-[#6366F1]/20';
+
+  if (error) {
+    saveButtonLabel = 'Save failed';
+    saveButtonClassName = 'bg-[#F87171]/10 text-[#F87171] border border-[#F87171]/30';
+  } else if (isSaving) {
+    saveButtonLabel = 'Saving';
+  } else if (isSaved) {
+    saveButtonLabel = 'Saved!';
+    saveButtonClassName = 'bg-[#22D3A3]/10 text-[#22D3A3] border border-[#22D3A3]/30';
+  }
 
   if (!chart) {
     return (
@@ -65,18 +87,21 @@ export default function ChartPanel(props: Props) {
             disabledReasons={chart.pieDisabledReason ? { pie: chart.pieDisabledReason } : {}}
           />
           <button
-            onClick={handleSave}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-              saved
-                ? 'bg-[#22D3A3]/10 text-[#22D3A3] border border-[#22D3A3]/30'
-                : 'bg-[#6366F1]/10 text-[#6366F1] border border-[#6366F1]/30 hover:bg-[#6366F1]/20'
-            }`}
+            onClick={() => void handleSave()}
+            disabled={isSaving || isSaved}
+            className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all ${saveButtonClassName}`}
           >
             <Bookmark size={14} />
-            {saved ? 'Saved!' : 'Save'}
+            {saveButtonLabel}
           </button>
         </div>
       </div>
+
+      {error && (
+        <div className="px-6 pt-2 text-xs text-[#F87171]">
+          {error}
+        </div>
+      )}
 
       {chart.chartOverrideReason && (
         <div className="px-6 pb-2 pt-2">
