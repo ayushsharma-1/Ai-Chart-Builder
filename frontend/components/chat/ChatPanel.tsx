@@ -14,7 +14,7 @@ interface Props {
   messages: Message[];
   isLoading: boolean;
   onSend: (prompt: string) => void;
-  onSaveChart: (result: ChartResult, type: ChartType) => void;
+  onSaveChart: (result: ChartResult, type: ChartType) => Promise<void>;
   onNewChat: () => void;
   activeSession?: ChatSession | null;
 }

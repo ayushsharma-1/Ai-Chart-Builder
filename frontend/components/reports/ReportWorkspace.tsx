@@ -53,14 +53,14 @@ export default function ReportWorkspace({ reportId, mode }: Props) {
     reset: resetTitleSaveState,
   } = useSaveChart(async () => {
     await updateReport({
-      title: draftTitle.trim() || report.title,
-      description: draftDescription,
+      title: draftTitle.trim() || (report?.title ?? ''),
+      description: draftDescription ?? (report?.description ?? ''),
     });
   });
 
   useEffect(() => {
     resetTitleSaveState();
-  }, [draftTitle, draftDescription, report._id, resetTitleSaveState]);
+  }, [draftTitle, draftDescription, report?._id, resetTitleSaveState]);
 
   const availableCharts = useMemo(() => {
     const attachedIds = new Set((report?.charts || []).map((chart) => chart._id));
@@ -283,19 +283,19 @@ export default function ReportWorkspace({ reportId, mode }: Props) {
                   </button>
                   {showChartPicker && (
                     <div className="absolute right-0 top-11 z-40 w-[360px] rounded-lg border border-[#1E1E2E] bg-[#0D0D13] p-3 shadow-2xl">
-                    disabled={isSavingTitle || titleSaved}
-                        <Search size={14} className="text-[#7B7B9A]" />
-                        <input
-                          value={chartSearch}
-                          onChange={(event) => setChartSearch(event.target.value)}
-                          placeholder="Search saved charts"
-                          className="min-w-0 flex-1 bg-transparent text-sm text-[#F0F0FF] outline-none placeholder:text-[#3F3F5C]"
-                        />
-                        <button type="button" onClick={() => setShowChartPicker(false)} className="text-[#7B7B9A] hover:text-[#F0F0FF]">
-                          <X size={14} />
-                        </button>
-                      </div>
-                      <div className="max-h-80 overflow-y-auto">
+                        <div className="flex items-center gap-2">
+                          <Search size={14} className="text-[#7B7B9A]" />
+                          <input
+                            value={chartSearch}
+                            onChange={(event) => setChartSearch(event.target.value)}
+                            placeholder="Search saved charts"
+                            className="min-w-0 flex-1 bg-transparent text-sm text-[#F0F0FF] outline-none placeholder:text-[#3F3F5C]"
+                          />
+                          <button type="button" onClick={() => setShowChartPicker(false)} className="text-[#7B7B9A] hover:text-[#F0F0FF]">
+                            <X size={14} />
+                          </button>
+                        </div>
+                      <div className="max-h-80 overflow-y-auto mt-3">
                         {availableCharts.length === 0 ? (
                           <div className="rounded-lg border border-[#1E1E2E] bg-[#111118] p-3 text-sm text-[#7B7B9A]">
                             No saved charts available. Generate and save charts from Chat, or all saved charts are already in this report.

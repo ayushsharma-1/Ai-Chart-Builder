@@ -7,7 +7,6 @@ exports.normalizeReservedAliases = normalizeReservedAliases;
 exports.rewriteSemanticAliases = rewriteSemanticAliases;
 exports.checkReservedAliasUsage = checkReservedAliasUsage;
 exports.getColumnRefsFromSql = getColumnRefsFromSql;
-exports.validateSqlForOnlyFullGroupBy = validateSqlForOnlyFullGroupBy;
 exports.rewriteGroupByAliases = rewriteGroupByAliases;
 exports.stripAggregatesFromGroupBy = stripAggregatesFromGroupBy;
 exports.hasNestedAggregates = hasNestedAggregates;
@@ -33,7 +32,7 @@ const FORBIDDEN_SYSTEM_REFS = [
     'mysql.user',
     'mysql.db',
 ];
-const FORBIDDEN_PII_COLUMNS = ['emailid', 'contactnumber', 'formatted_contact_number'];
+const FORBIDDEN_PII_COLUMNS = new Set(['emailid', 'contactnumber', 'formatted_contact_number']);
 const FORBIDDEN_FUNCTION_NAMES = new Set([
     'LOAD_FILE',
     'SLEEP',
@@ -170,7 +169,13 @@ function collectTableNames(ast, scopeCteNames = new Set()) {
             }
         }
     };
-    const fromItems = Array.isArray(ast.from) ? ast.from : ast.from ? [ast.from] : [];
+    let fromItems = [];
+    if (Array.isArray(ast.from)) {
+        fromItems = ast.from;
+    }
+    else if (ast.from) {
+        fromItems = [ast.from];
+    }
     addFromItems(fromItems);
     return names;
 }
@@ -314,8 +319,8 @@ function preParseChecks(sql) {
         return 'Only single SELECT queries are allowed.';
     return null;
 }
-function validateAst(ast, sql) {
-    const tableNames = extractTableNames(sql);
+function validateAst(ast, scopeCteNames = new Set()) {
+    const tableNames = collectTableNames(ast, scopeCteNames);
     for (const tableName of tableNames) {
         if (!ALLOWED_TABLES.has(tableName)) {
             return 'Query references a data source that is not available.';
@@ -323,7 +328,7 @@ function validateAst(ast, sql) {
     }
     const selectColumns = collectColumnRefs({ columns: ast.columns });
     for (const ref of selectColumns) {
-        if (FORBIDDEN_PII_COLUMNS.includes(ref.column)) {
+        if (FORBIDDEN_PII_COLUMNS.has(ref.column)) {
             return 'Query requests restricted data fields.';
         }
     }
@@ -340,11 +345,29 @@ function validateAst(ast, sql) {
             return 'GROUP BY clause cannot contain aggregate functions. Use HAVING for aggregate conditions.';
         }
     }
+    const selectAliases = new Set();
+    for (const column of ast.columns || []) {
+        const alias = normalizeName(column?.as);
+        if (alias)
+            selectAliases.add(alias);
+    }
+    for (const groupExpr of groupByExpressions) {
+        if (groupExpr?.type === 'column_ref' && !groupExpr.table && groupExpr.column) {
+            const alias = normalizeName(groupExpr.column);
+            if (selectAliases.has(alias)) {
+                return `GROUP BY references SELECT alias '${alias}'. Use the full expression instead: repeat the source expression from SELECT.`;
+            }
+        }
+    }
+    const nextScopeCteNames = new Set(scopeCteNames);
+    for (const cteName of collectCteNames(ast)) {
+        nextScopeCteNames.add(cteName);
+    }
     const subqueryNodes = collectNodes(ast, 'select');
     for (const sub of subqueryNodes) {
         if (sub === ast)
             continue;
-        const subError = validateAst(sub, sql);
+        const subError = validateAst(sub, nextScopeCteNames);
         if (subError)
             return subError;
     }
@@ -367,14 +390,42 @@ function validateSql(sql) {
     if (ast?.type?.toLowerCase() !== 'select') {
         return { safe: false, reason: 'Only SELECT queries are allowed.' };
     }
-    const astError = validateAst(ast, trimmed);
-    if (astError)
+    const astError = validateAst(ast);
+    if (astError) {
+        // Try a targeted auto-fix for common GROUP BY issues by stripping
+        // aggregate expressions from GROUP BY clauses. This operates per-scope
+        // and will be revalidated against the AST to ensure safety.
+        if (/GROUP BY clause cannot contain aggregate|GROUP BY references SELECT alias/i.test(astError)) {
+            const candidate = stripAggregatesFromGroupBy(trimmed);
+            if (candidate !== trimmed) {
+                try {
+                    const result = parser.astify(candidate, { database: 'MySQL' });
+                    const candAst = Array.isArray(result) ? result[0] : result;
+                    const candError = validateAst(candAst);
+                    if (!candError) {
+                        let sanitizedSql = candidate;
+                        if (!candAst.limit)
+                            sanitizedSql += ` LIMIT ${MAX_ROWS}`;
+                        const transformations = ['strip_aggregates_from_groupby'];
+                        if (sanitizedSql !== candidate)
+                            transformations.push('add_limit');
+                        return { safe: true, sanitizedSql, transformations };
+                    }
+                }
+                catch {
+                    // fallthrough to returning original validation failure
+                }
+            }
+        }
         return { safe: false, reason: astError };
+    }
     let sanitizedSql = trimmed;
+    const transformations = [];
     if (!ast.limit) {
         sanitizedSql += ` LIMIT ${MAX_ROWS}`;
+        transformations.push('add_limit');
     }
-    return { safe: true, sanitizedSql };
+    return { safe: true, sanitizedSql, transformations: transformations.length ? transformations : undefined };
 }
 function normalizeReservedAliases(sql) {
     let ast;
@@ -472,62 +523,9 @@ function getColumnRefsFromSql(sql) {
     }
     return collectColumnRefs(ast, []);
 }
-function validateSqlForOnlyFullGroupBy(sql) {
-    if (!sql || typeof sql !== 'string')
-        return null;
-    let ast;
-    try {
-        const result = parser.astify(sql.trim().replace(/;\s*$/, ''), { database: 'MySQL' });
-        ast = Array.isArray(result) ? result[0] : result;
-    }
-    catch {
-        return null;
-    }
-    const selectNodes = [ast, ...collectNodes(ast, 'select').filter((n) => n !== ast)];
-    for (const selectNode of selectNodes) {
-        const columns = selectNode?.columns || [];
-        const groupByExprs = getGroupByExpressions(selectNode?.groupby || selectNode?.groupBy || null);
-        // Detect aggregates in select list
-        let hasAggregateInSelect = false;
-        let nonAggregateCount = 0;
-        for (const col of columns) {
-            const expr = col?.expr ?? col;
-            if (expressionContainsAggregate(expr)) {
-                hasAggregateInSelect = true;
-            }
-            else {
-                nonAggregateCount += 1;
-            }
-        }
-        if (hasAggregateInSelect && (!groupByExprs || groupByExprs.length === 0)) {
-            if (nonAggregateCount > 0) {
-                return 'Aggregates present but no GROUP BY — non-aggregated fields detected.';
-            }
-        }
-        // GROUP BY must not contain aggregates
-        for (const g of groupByExprs) {
-            if (expressionContainsAggregate(g)) {
-                return 'GROUP BY clause cannot contain aggregate functions (COUNT, SUM, AVG, MIN, MAX). Remove the aggregate expression from the GROUP BY clause.';
-            }
-        }
-        // GROUP BY must not reference SELECT aliases (unqualified alias usage)
-        const selectAliases = new Set();
-        for (const col of columns) {
-            const asName = normalizeName(col?.as);
-            if (asName)
-                selectAliases.add(asName);
-        }
-        for (const g of groupByExprs) {
-            if (g?.type === 'column_ref' && !g.table && g.column) {
-                const colName = normalizeName(g.column);
-                if (selectAliases.has(colName)) {
-                    return `GROUP BY references SELECT alias '${colName}'. Use the full expression instead: repeat the source expression from SELECT.`;
-                }
-            }
-        }
-    }
-    return null;
-}
+// Note: `validateSqlForOnlyFullGroupBy` removed — group-by checks and
+// targeted fixes are folded into `validateSql()` which validates each
+// select scope independently and returns optional `transformations[]`.
 function rewriteGroupByAliases(sql) {
     let ast;
     try {

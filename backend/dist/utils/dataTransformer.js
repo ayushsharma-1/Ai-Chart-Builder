@@ -22,6 +22,20 @@ function isDateLikeValue(value) {
         return false;
     return /^\d{4}-\d{2}(-\d{2})?$/.test(value);
 }
+function isIdentifierColumn(columnName) {
+    const lower = columnName.toLowerCase();
+    return (lower === 'id' ||
+        lower.endsWith('_id') ||
+        (lower.endsWith('id') && (lower.includes('owner') ||
+            lower.includes('recruiter') ||
+            lower.includes('candidate') ||
+            lower.includes('job') ||
+            lower.includes('company') ||
+            lower.includes('account') ||
+            lower.includes('contact') ||
+            lower.includes('client') ||
+            lower.includes('user'))));
+}
 function buildDataProfile(data) {
     if (data.length === 0) {
         return {
@@ -66,11 +80,12 @@ function buildDataProfile(data) {
             isMonotonic = vals.every((v, i) => i === 0 || v >= vals[i - 1]);
         }
         const isDateLike = nonNullValues.some(v => isDateLikeValue(v));
-        return { name, type, cardinality, nullCount, sampleValues, isMonotonic, min, max, isDateLike };
+        const isIdentifier = isIdentifierColumn(name);
+        return { name, type, cardinality, nullCount, sampleValues, isMonotonic, min, max, isDateLike, isIdentifier };
     });
     // Profile-level computed fields
     const hasTimeSeriesColumn = columns.some(c => c.isDateLike || c.type === 'date');
-    const hasNumericMetric = columns.some(c => c.type === 'number');
+    const hasNumericMetric = columns.some(c => c.type === 'number' && !c.isIdentifier);
     const stringColumns = columns.filter(c => c.type === 'string');
     const maxCardinality = stringColumns.reduce((max, c) => Math.max(max, c.cardinality), 0);
     const isHighCardinality = maxCardinality > 30;

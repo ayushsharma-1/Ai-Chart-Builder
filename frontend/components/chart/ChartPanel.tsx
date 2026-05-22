@@ -34,7 +34,7 @@ export default function ChartPanel(props: Props) {
 
   useEffect(() => {
     reset();
-  }, [activeType, chart?._id, reset]);
+  }, [activeType, chart?.sql, reset]);
 
   const handleSave = async () => {
     if (!chart) {

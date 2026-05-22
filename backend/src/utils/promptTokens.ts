@@ -136,6 +136,34 @@ FILTER RULES (absolute, no exceptions):
   tblassignjobcandidate: NO filter - this table has neither deleted nor archived
 `.trim();
 
+export const FROZEN_FK_LABEL_RULES = `FOREIGN KEY LABEL RULES — never return raw integer IDs in analytical output:
+
+COMPANY NAME:
+  - tbljob.companyid is a raw integer FK — NEVER select or GROUP BY it directly.
+  - To get company name for job queries: JOIN tblassignjobcandidate ON tbljob.id = tblassignjobcandidate.jobid
+    and use tblassignjobcandidate.companyname AS company_name.
+  - If the query is already on tblassignjobcandidate: use assignment.companyname directly.
+  - Do NOT reference tblcompany — it is not an allowed table.
+
+JOB NAME:
+  - tblassignjobcandidate.jobid is a raw integer FK — NEVER select it as a label.
+  - Use tblassignjobcandidate.jobname AS job_name instead.
+  - If joining tbljob: use tbljob.name AS job_name.
+
+CANDIDATE NAME:
+  - tblassignjobcandidate.candidateid is a raw integer FK — NEVER select it as a label.
+  - Use tblassignjobcandidate.candidatename AS candidate_name instead.
+  - If joining tblcandidate: use CONCAT(tblcandidate.firstname, ' ', tblcandidate.lastname) AS candidate_name.
+
+OWNER / RECRUITER:
+  - ownerid is an integer with no name table in the allowed set.
+  - When grouping by owner, label it as recruiter_id and note it is a numeric identifier.
+  - Do NOT attempt to join any recruiter or user table — they are not allowed.
+
+RULE: Before finalizing any SELECT, scan every selected column.
+If it ends in 'id' and is a FK (companyid, candidateid, jobid, contactid, clientid),
+replace it with the denormalized label column from tblassignjobcandidate or a JOIN.`.trim();
+
 export const FROZEN_WINDOW_FUNCTION_RULES = `
 WINDOW FUNCTION RULES (critical - violations cause query rejection):
 - Never use CTEs (WITH), window functions (ROW_NUMBER(), RANK(), DENSE_RANK(), SUM() OVER, PARTITION BY), or OVER clauses in generated SQL.
@@ -313,6 +341,7 @@ export function buildFrozenSystemPrefix(): string {
     FROZEN_IDENTITY,
     FROZEN_SQL_RULES,
     FROZEN_COLUMN_CORRECTIONS,
+    FROZEN_FK_LABEL_RULES,
     FROZEN_WINDOW_FUNCTION_RULES,
     FROZEN_FILTER_RULES,
     FROZEN_ALLOWED_FUNCTIONS,

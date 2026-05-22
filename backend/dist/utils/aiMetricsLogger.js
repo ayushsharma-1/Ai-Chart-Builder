@@ -7,13 +7,18 @@ exports.logAICall = logAICall;
 const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
 const GROQ_PRICING = {
-    'llama-3.3-70b-versatile': { input: 0.59, output: 0.79 },
+    'openai/gpt-oss-120b': { input: 0.59, output: 0.79 },
     'llama-3.1-8b-instant': { input: 0.05, output: 0.08 },
-    'mixtral-8x7b-32768': { input: 0.24, output: 0.24 },
-    'gemma2-9b-it': { input: 0.2, output: 0.2 },
     default: { input: 0.59, output: 0.79 },
 };
 function calculateCost(model, promptTokens, completionTokens) {
+    if (model === 'node-sql-parser') {
+        return {
+            inputCostUsd: 0,
+            outputCostUsd: 0,
+            totalCostUsd: 0,
+        };
+    }
     const pricing = GROQ_PRICING[model] || GROQ_PRICING.default;
     const inputCostUsd = (promptTokens / 1000000) * pricing.input;
     const outputCostUsd = (completionTokens / 1000000) * pricing.output;

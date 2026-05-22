@@ -26,7 +26,7 @@ export interface AIMetricsEntry {
     sql?: string;
     previousSql?: string;
     correctionNote?: string;
-    validationPassed?: boolean;
+    structuralValidationPassed?: boolean;
     validationIssues?: string[];
     transformations?: string[];
     retried?: boolean;
@@ -52,6 +52,7 @@ export interface AIMetricsEntry {
     fatal?: boolean;
     reason?: string;
     category?: string;
+    mode?: 'validation' | 'execution';
   };
   latencyMs: number;
   tokens: {
@@ -80,6 +81,13 @@ const GROQ_PRICING: Record<string, { input: number; output: number }> = {
 };
 
 function calculateCost(model: string, promptTokens: number, completionTokens: number) {
+  if (model === 'node-sql-parser') {
+    return {
+      inputCostUsd: 0,
+      outputCostUsd: 0,
+      totalCostUsd: 0,
+    };
+  }
   const pricing = GROQ_PRICING[model] || GROQ_PRICING.default;
   const inputCostUsd = (promptTokens / 1_000_000) * pricing.input;
   const outputCostUsd = (completionTokens / 1_000_000) * pricing.output;

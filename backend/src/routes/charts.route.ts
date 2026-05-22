@@ -64,7 +64,7 @@ router.get('/', async (_req: Request, res: Response) => {
 router.post('/', async (req: Request, res: Response) => {
   try {
     const payload = SaveChartSchema.parse(req.body);
-    const chart = await saveChart(payload);
+    const chart = await saveChart(payload as any);
     res.json({ success: true, chart });
   } catch (err: any) {
     return handleChartRouteError(res, err, 'Unable to save chart.');

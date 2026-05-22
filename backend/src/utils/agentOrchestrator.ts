@@ -5,6 +5,8 @@ import { getSchemaForTables } from '../services/schemaService';
 import { runQuery } from '../services/sql.service';
 import { buildDataProfile } from './dataTransformer';
 import { recommendChart } from './chartRecommender';
+import { logAICall } from './aiMetricsLogger';
+import { validateSql } from './sqlGuard';
 
 const CONFIDENCE_THRESHOLD = 0.65;
 
@@ -62,7 +64,30 @@ export type OrchestratorResponse = OrchestratorResult | OrchestratorError;
 
 function isAnalyticalPrompt(userPrompt: string): boolean {
   const normalized = userPrompt.toLowerCase();
-  return /\b(top\s*\d+|top|per|group by|rank|ranking|average|avg|mean|sum|total|count|trend|distribution|stddev|standard deviation|variance|outlier|deviation|revenue|billing)\b/.test(normalized);
+  const analyticsKeywords = [
+    'top',
+    'per',
+    'group by',
+    'rank',
+    'ranking',
+    'average',
+    'avg',
+    'mean',
+    'sum',
+    'total',
+    'count',
+    'trend',
+    'distribution',
+    'stddev',
+    'standard deviation',
+    'variance',
+    'outlier',
+    'deviation',
+    'revenue',
+    'billing',
+  ];
+
+  return analyticsKeywords.some((keyword) => normalized.includes(keyword));
 }
 
 function stringifyErrorValue(value: unknown): string {
@@ -155,37 +180,142 @@ async function generateAgentSql(
   }
 }
 
+function logSqlValidationEvent(input: OrchestratorInput, sql: string, validation: ReturnType<typeof validateSql>, latencyMs: number): void {
+  logAICall({
+    callType: 'sql_validation',
+    model: 'node-sql-parser',
+    sessionId: input.sessionId,
+    userPrompt: input.userPrompt,
+    success: validation.safe,
+    errorMessage: validation.safe ? undefined : validation.reason,
+    errorDetails: validation.safe
+      ? undefined
+      : {
+          reason: validation.reason,
+          category: 'VALIDATION_ERROR',
+        },
+    sqlFlow: {
+      stage: 'validation',
+      sql,
+      structuralValidationPassed: validation.safe,
+      validationIssues: validation.safe ? undefined : [validation.reason || 'SQL failed validation'],
+      transformations: validation.transformations || (validation.sanitizedSql && validation.sanitizedSql !== sql ? ['validateSqlSanitized'] : undefined),
+    },
+    query: {
+      sql,
+      sanitizedSql: validation.sanitizedSql,
+      stage: 'validation',
+    },
+    latencyMs,
+  });
+}
+
+async function repairSqlAfterValidationFailure(input: OrchestratorInput, sql: string, validationReason: string): Promise<{ sql: string | null; error?: OrchestratorError }> {
+  const fix = await runFixAgent({
+    sql,
+    mode: 'validation',
+    validationIssues: [validationReason],
+    sessionId: input.sessionId,
+    userPrompt: input.userPrompt,
+  });
+
+  if (!fix.fixed || !fix.fixedSql) {
+    console.error('[Pipeline] Validation fix agent did not return a usable query');
+    return { sql: null, error: { success: false, type: 'validation_error', message: 'I could not repair the SQL query. Please simplify the request and try again.' } };
+  }
+
+  const repairedValidation = validateSql(fix.fixedSql);
+  if (!repairedValidation.safe || !repairedValidation.sanitizedSql) {
+    console.error('[Pipeline] Validation fix agent returned SQL that still failed AST validation');
+    return { sql: null, error: { success: false, type: 'validation_error', message: 'I could not repair the SQL query. Please simplify the request and try again.' } };
+  }
+
+  return { sql: repairedValidation.sanitizedSql };
+}
+
+async function repairSqlAfterExecutionFailure(input: OrchestratorInput, originalSql: string, currentSql: string, mysqlError: string): Promise<{ sql: string | null; error?: OrchestratorError }> {
+  const fix = await runFixAgent({
+    sql: currentSql,
+    mode: 'execution',
+    mysqlError,
+    sessionId: input.sessionId,
+    userPrompt: input.userPrompt,
+  });
+
+  if (!fix.fixed || !fix.fixedSql) {
+    console.error('[Pipeline] Fix agent did not return a usable query');
+    return { sql: null, error: { success: false, type: 'error', message: 'Something went wrong. Please try again.' } };
+  }
+
+  const repairedValidation = validateSql(fix.fixedSql);
+  if (!repairedValidation.safe || !repairedValidation.sanitizedSql) {
+    console.error('[Pipeline] Execution fix agent returned SQL that failed AST validation');
+    return { sql: null, error: { success: false, type: 'error', message: 'Something went wrong. Please try again.' } };
+  }
+
+  return { sql: repairedValidation.sanitizedSql };
+}
+
 async function executeSqlWithRepair(input: OrchestratorInput, sql: string) {
+  const validationStart = Date.now();
+  const validation = validateSql(sql);
+
+  logSqlValidationEvent(input, sql, validation, Date.now() - validationStart);
+
+  let currentSql = validation.sanitizedSql || sql;
+  let fixAttempted = false;
+  let fixAgentCalls = 0; // cap fix agent LLM calls to 1 per request
+
+  if (!validation.safe || !validation.sanitizedSql) {
+    const repairResult = await repairSqlAfterValidationFailure(input, sql, validation.reason || 'SQL failed validation');
+    if (!repairResult.sql) {
+      return { fixAttempted: true, error: repairResult.error || { success: false, type: 'validation_error', message: 'I could not repair the SQL query. Please simplify the request and try again.' } as OrchestratorError };
+    }
+
+    currentSql = repairResult.sql;
+    fixAttempted = true;
+    fixAgentCalls += 1;
+  }
+
   try {
-    const queryResult = await runQuery(sql, [], {
+    const correctedSql = currentSql === sql ? undefined : currentSql;
+    const queryResult = await runQuery(currentSql, [], {
       sessionId: input.sessionId,
       userPrompt: input.userPrompt,
       originalSql: sql,
-      retryCount: 0,
+      correctedSql,
+      retryCount: fixAttempted ? 1 : 0,
     });
-    return { queryResult, fixAttempted: false };
+    return { queryResult, fixAttempted };
   } catch (err: any) {
     const mysqlError = err?.message || String(err);
     console.warn('[Pipeline] Execution failed, attempting fix agent:', mysqlError);
 
-    const fix = await runFixAgent(sql, mysqlError, input.sessionId);
-    if (!fix.fixed || !fix.fixedSql) {
-      console.error('[Pipeline] Fix agent did not return a usable query');
-      return { fixAttempted: false, error: { success: false, type: 'error', message: 'Something went wrong. Please try again.' } as OrchestratorError };
+    // Only allow one fix-agent LLM call per request to avoid unbounded retries
+    if (fixAgentCalls >= 1) {
+      console.error('[Pipeline] Execution failed and fix agent quota exhausted. Bailing.');
+      return { fixAttempted: true, error: { success: false, type: 'error', message: 'Execution failed and automated repairs exhausted.' } as OrchestratorError };
     }
 
+    const repairResult = await repairSqlAfterExecutionFailure(input, sql, currentSql, mysqlError);
+    if (!repairResult.sql) {
+      return { fixAttempted: true, error: repairResult.error || { success: false, type: 'error', message: 'Something went wrong. Please try again.' } as OrchestratorError };
+    }
+
+    fixAgentCalls += 1;
+
     try {
-      const queryResult = await runQuery(fix.fixedSql, [], {
+      const queryResult = await runQuery(repairResult.sql, [], {
         sessionId: input.sessionId,
         userPrompt: input.userPrompt,
         originalSql: sql,
-        correctedSql: fix.fixedSql,
+        correctedSql: repairResult.sql,
         retryCount: 1,
       });
       return { queryResult, fixAttempted: true };
     } catch (fixErr: any) {
       console.error('[Pipeline] Fix agent attempt also failed', {
-        sql: fix.fixedSql,
+        sql: repairResult.sql,
         error: {
           name: fixErr?.name,
           message: fixErr?.message,
@@ -353,13 +483,12 @@ export async function runAnalyticsPipeline(input: OrchestratorInput): Promise<Or
 
   if (queryResult.rowCount === 0) {
     try {
-      const { logAICall } = await import('../utils/aiMetricsLogger');
       logAICall({
         callType: 'sql_execution',
         model: 'mysql2',
         sessionId: input.sessionId,
         userPrompt: input.userPrompt,
-        success: true,
+        success: false,
         errorMessage: 'EMPTY_ANALYTICAL_RESULT',
         errorDetails: { reason: 'No rows returned for non-table chart', name: 'EMPTY_ANALYTICAL_RESULT', category: 'EMPTY_RESULT' },
         query: { sql: agentResponse.sql, sanitizedSql: agentResponse.sql, stage: 'execution' },

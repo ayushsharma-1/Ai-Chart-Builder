@@ -1,4 +1,4 @@
-import { Parser, AST, Select } from 'node-sql-parser';
+import { Parser, Select } from 'node-sql-parser';
 
 const parser = new Parser();
 
@@ -16,6 +16,7 @@ export interface SqlGuardResult {
   safe: boolean;
   reason?: string;
   sanitizedSql?: string;
+  transformations?: string[];
 }
 
 export interface ReservedAliasNormalizationResult {
@@ -41,7 +42,7 @@ const FORBIDDEN_SYSTEM_REFS = [
   'mysql.user',
   'mysql.db',
 ];
-const FORBIDDEN_PII_COLUMNS = ['emailid', 'contactnumber', 'formatted_contact_number'];
+const FORBIDDEN_PII_COLUMNS = new Set(['emailid', 'contactnumber', 'formatted_contact_number']);
 
 const FORBIDDEN_FUNCTION_NAMES = new Set([
   'LOAD_FILE',
@@ -198,7 +199,12 @@ function collectTableNames(ast: Select, scopeCteNames: Set<string> = new Set()):
     }
   };
 
-  const fromItems = Array.isArray(ast.from) ? ast.from : ast.from ? [ast.from] : [];
+  let fromItems: any[] = [];
+  if (Array.isArray(ast.from)) {
+    fromItems = ast.from;
+  } else if (ast.from) {
+    fromItems = [ast.from];
+  }
   addFromItems(fromItems);
 
   return names;
@@ -355,8 +361,8 @@ function preParseChecks(sql: string): string | null {
   return null;
 }
 
-function validateAst(ast: Select, sql: string): string | null {
-  const tableNames = extractTableNames(sql);
+function validateAst(ast: Select, scopeCteNames: Set<string> = new Set()): string | null {
+  const tableNames = collectTableNames(ast, scopeCteNames);
   for (const tableName of tableNames) {
     if (!ALLOWED_TABLES.has(tableName)) {
       return 'Query references a data source that is not available.';
@@ -365,7 +371,7 @@ function validateAst(ast: Select, sql: string): string | null {
 
   const selectColumns = collectColumnRefs({ columns: ast.columns });
   for (const ref of selectColumns) {
-    if (FORBIDDEN_PII_COLUMNS.includes(ref.column)) {
+    if (FORBIDDEN_PII_COLUMNS.has(ref.column)) {
       return 'Query requests restricted data fields.';
     }
   }
@@ -385,10 +391,30 @@ function validateAst(ast: Select, sql: string): string | null {
     }
   }
 
+  const selectAliases = new Set<string>();
+  for (const column of ast.columns || []) {
+    const alias = normalizeName(column?.as);
+    if (alias) selectAliases.add(alias);
+  }
+
+  for (const groupExpr of groupByExpressions) {
+    if (groupExpr?.type === 'column_ref' && !groupExpr.table && groupExpr.column) {
+      const alias = normalizeName(groupExpr.column);
+      if (selectAliases.has(alias)) {
+        return `GROUP BY references SELECT alias '${alias}'. Use the full expression instead: repeat the source expression from SELECT.`;
+      }
+    }
+  }
+
+  const nextScopeCteNames = new Set(scopeCteNames);
+  for (const cteName of collectCteNames(ast)) {
+    nextScopeCteNames.add(cteName);
+  }
+
   const subqueryNodes = collectNodes(ast, 'select');
   for (const sub of subqueryNodes) {
     if (sub === ast) continue;
-    const subError = validateAst(sub as Select, sql);
+    const subError = validateAst(sub as Select, nextScopeCteNames);
     if (subError) return subError;
   }
 
@@ -414,15 +440,42 @@ export function validateSql(sql: string): SqlGuardResult {
     return { safe: false, reason: 'Only SELECT queries are allowed.' };
   }
 
-  const astError = validateAst(ast as Select, trimmed);
-  if (astError) return { safe: false, reason: astError };
+  const astError = validateAst(ast as Select);
+  if (astError) {
+    // Try a targeted auto-fix for common GROUP BY issues by stripping
+    // aggregate expressions from GROUP BY clauses. This operates per-scope
+    // and will be revalidated against the AST to ensure safety.
+    if (/GROUP BY clause cannot contain aggregate|GROUP BY references SELECT alias/i.test(astError)) {
+      const candidate = stripAggregatesFromGroupBy(trimmed);
+      if (candidate !== trimmed) {
+        try {
+          const result = parser.astify(candidate, { database: 'MySQL' });
+          const candAst = Array.isArray(result) ? result[0] : result;
+          const candError = validateAst(candAst as Select);
+          if (!candError) {
+            let sanitizedSql = candidate;
+            if (!(candAst as any).limit) sanitizedSql += ` LIMIT ${MAX_ROWS}`;
+            const transformations: string[] = ['strip_aggregates_from_groupby'];
+            if (sanitizedSql !== candidate) transformations.push('add_limit');
+            return { safe: true, sanitizedSql, transformations };
+          }
+        } catch {
+          // fallthrough to returning original validation failure
+        }
+      }
+    }
 
-  let sanitizedSql = trimmed;
-  if (!ast.limit) {
-    sanitizedSql += ` LIMIT ${MAX_ROWS}`;
+    return { safe: false, reason: astError };
   }
 
-  return { safe: true, sanitizedSql };
+  let sanitizedSql = trimmed;
+  const transformations: string[] = [];
+  if (!ast.limit) {
+    sanitizedSql += ` LIMIT ${MAX_ROWS}`;
+    transformations.push('add_limit');
+  }
+
+  return { safe: true, sanitizedSql, transformations: transformations.length ? transformations : undefined };
 }
 
 export function normalizeReservedAliases(sql: string): ReservedAliasNormalizationResult {
@@ -529,71 +582,12 @@ export function getColumnRefsFromSql(sql: string): Array<{ table: string | null;
     return [];
   }
 
-  return collectColumnRefs(ast as any, []);
+  return collectColumnRefs(ast, []);
 }
 
-export function validateSqlForOnlyFullGroupBy(sql: string): string | null {
-  if (!sql || typeof sql !== 'string') return null;
-
-  let ast: any;
-  try {
-    const result = parser.astify(sql.trim().replace(/;\s*$/, ''), { database: 'MySQL' });
-    ast = Array.isArray(result) ? result[0] : result;
-  } catch {
-    return null;
-  }
-
-  const selectNodes = [ast, ...collectNodes(ast, 'select').filter((n) => n !== ast)];
-
-  for (const selectNode of selectNodes) {
-    const columns = selectNode?.columns || [];
-    const groupByExprs = getGroupByExpressions(selectNode?.groupby || selectNode?.groupBy || null);
-
-    // Detect aggregates in select list
-    let hasAggregateInSelect = false;
-    let nonAggregateCount = 0;
-
-    for (const col of columns) {
-      const expr = col?.expr ?? col;
-      if (expressionContainsAggregate(expr)) {
-        hasAggregateInSelect = true;
-      } else {
-        nonAggregateCount += 1;
-      }
-    }
-
-    if (hasAggregateInSelect && (!groupByExprs || groupByExprs.length === 0)) {
-      if (nonAggregateCount > 0) {
-        return 'Aggregates present but no GROUP BY — non-aggregated fields detected.';
-      }
-    }
-
-    // GROUP BY must not contain aggregates
-    for (const g of groupByExprs) {
-      if (expressionContainsAggregate(g)) {
-        return 'GROUP BY clause cannot contain aggregate functions (COUNT, SUM, AVG, MIN, MAX). Remove the aggregate expression from the GROUP BY clause.';
-      }
-    }
-
-    // GROUP BY must not reference SELECT aliases (unqualified alias usage)
-    const selectAliases = new Set<string>();
-    for (const col of columns) {
-      const asName = normalizeName(col?.as);
-      if (asName) selectAliases.add(asName);
-    }
-
-    for (const g of groupByExprs) {
-      if (g?.type === 'column_ref' && !g.table && g.column) {
-        const colName = normalizeName(g.column);
-        if (selectAliases.has(colName)) {
-          return `GROUP BY references SELECT alias '${colName}'. Use the full expression instead: repeat the source expression from SELECT.`;
-        }
-      }
-    }
-  }
-
-  return null;
-}
+// Note: `validateSqlForOnlyFullGroupBy` removed — group-by checks and
+// targeted fixes are folded into `validateSql()` which validates each
+// select scope independently and returns optional `transformations[]`.
 
 export function rewriteGroupByAliases(sql: string): string {
   let ast: any;

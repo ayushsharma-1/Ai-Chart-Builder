@@ -1,9 +1,8 @@
 import { z } from 'zod';
 import groq from '../config/groq';
 import { logAICall } from '../utils/aiMetricsLogger';
-import { validateSqlForOnlyFullGroupBy } from '../utils/sqlGuard';
-
-export { validateSqlForOnlyFullGroupBy };
+// Group-by validation moved into `sqlGuard.validateSql()` and no longer
+// exported separately.
 
 interface InsightChartInput {
   id: string;

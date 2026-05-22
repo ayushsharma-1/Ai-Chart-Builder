@@ -1,6 +1,10 @@
 import groq from '../config/groq';
 import { validateSql } from '../utils/sqlGuard';
-import { validateSqlForOnlyFullGroupBy } from '../services/llm.service';
+import {
+  FROZEN_COLUMN_CORRECTIONS,
+  FROZEN_SQL_RULES,
+  FROZEN_WINDOW_FUNCTION_RULES,
+} from '../utils/promptTokens';
 import { logAICall } from '../utils/aiMetricsLogger';
 
 const FIX_SYSTEM_PROMPT = `
@@ -27,25 +31,50 @@ COMMON ERROR PATTERNS AND FIXES:
 Respond with ONLY the corrected SQL SELECT statement. No markdown. No explanation.
 `.trim();
 
-export async function runFixAgent(
-  brokenSql: string,
-  mysqlError: string,
-  sessionId?: string,
-): Promise<{ fixedSql: string | null; fixed: boolean }> {
+const VALIDATION_FIX_SYSTEM_PROMPT = [
+  'You are a MySQL 8 SQL repair specialist.',
+  'You will receive a broken SQL query and validation issues from the AST gate.',
+  'Return ONLY the corrected SQL SELECT statement. No explanation, no markdown.',
+  '',
+  FROZEN_SQL_RULES,
+  FROZEN_WINDOW_FUNCTION_RULES,
+  FROZEN_COLUMN_CORRECTIONS,
+].join('\n\n').trim();
+
+export interface RunFixAgentInput {
+  sql: string;
+  mode: 'validation' | 'execution';
+  validationIssues?: string[];
+  mysqlError?: string;
+  sessionId?: string;
+  userPrompt?: string;
+}
+
+export async function runFixAgent(input: RunFixAgentInput): Promise<{ fixedSql: string | null; fixed: boolean }> {
   const start = Date.now();
   let usage: any;
   let success = false;
   let errorMessage: string | undefined;
 
+  const systemPrompt = input.mode === 'validation' ? VALIDATION_FIX_SYSTEM_PROMPT : FIX_SYSTEM_PROMPT;
+  const userMessage = input.mode === 'validation'
+    ? [
+        `BROKEN SQL:\n${input.sql}`,
+        `VALIDATION ISSUES:\n${(input.validationIssues || []).join('\n') || 'Unknown validation failure'}`,
+        'Return ONLY the corrected SQL.',
+      ].join('\n\n')
+    : [
+        `BROKEN SQL:\n${input.sql}`,
+        `MYSQL ERROR:\n${input.mysqlError || 'Unknown MySQL error'}`,
+        'Return ONLY the corrected SQL.',
+      ].join('\n\n');
+
   try {
     const completion = await groq.chat.completions.create({
       model: 'openai/gpt-oss-120b',
       messages: [
-        { role: 'system', content: FIX_SYSTEM_PROMPT },
-        {
-          role: 'user',
-          content: `BROKEN SQL:\n${brokenSql}\n\nMYSQL ERROR:\n${mysqlError}\n\nReturn ONLY the corrected SQL.`,
-        },
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userMessage },
       ],
       temperature: 0,
       max_tokens: 800,
@@ -61,12 +90,6 @@ export async function runFixAgent(
       return { fixedSql: null, fixed: false };
     }
 
-    const groupByError = validateSqlForOnlyFullGroupBy(guard.sanitizedSql);
-    if (groupByError) {
-      console.warn('[FixAgent] Fixed SQL failed GROUP BY check:', groupByError);
-      return { fixedSql: null, fixed: false };
-    }
-
     success = true;
     console.info('[FixAgent] Successfully fixed SQL');
     return { fixedSql: guard.sanitizedSql, fixed: true };
@@ -78,11 +101,16 @@ export async function runFixAgent(
     logAICall({
       callType: 'fix_agent',
       model: 'openai/gpt-oss-120b',
+      userPrompt: input.userPrompt,
       success,
       errorMessage,
       latencyMs: Date.now() - start,
       usage,
-      sessionId,
+      sessionId: input.sessionId,
+      errorDetails: {
+        mode: input.mode,
+        reason: input.mode === 'validation' ? (input.validationIssues || []).join(' | ') || undefined : input.mysqlError,
+      },
     });
   }
 }

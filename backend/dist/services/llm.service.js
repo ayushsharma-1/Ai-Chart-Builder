@@ -3,13 +3,10 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.validateSqlForOnlyFullGroupBy = void 0;
 exports.generateDashboardInsights = generateDashboardInsights;
 exports.generateSqlExplanation = generateSqlExplanation;
 const groq_1 = __importDefault(require("../config/groq"));
 const aiMetricsLogger_1 = require("../utils/aiMetricsLogger");
-const sqlGuard_1 = require("../utils/sqlGuard");
-Object.defineProperty(exports, "validateSqlForOnlyFullGroupBy", { enumerable: true, get: function () { return sqlGuard_1.validateSqlForOnlyFullGroupBy; } });
 async function generateDashboardInsights(reportTitle, charts) {
     const start = Date.now();
     let usage;
@@ -17,7 +14,7 @@ async function generateDashboardInsights(reportTitle, charts) {
     let errorMessage;
     try {
         const completion = await groq_1.default.chat.completions.create({
-            model: 'llama-3.3-70b-versatile',
+            model: 'openai/gpt-oss-120b',
             messages: [
                 {
                     role: 'system',
@@ -48,7 +45,7 @@ async function generateDashboardInsights(reportTitle, charts) {
     finally {
         (0, aiMetricsLogger_1.logAICall)({
             callType: 'dashboard_insights',
-            model: 'llama-3.3-70b-versatile',
+            model: 'openai/gpt-oss-120b',
             success,
             errorMessage,
             latencyMs: Date.now() - start,
@@ -63,7 +60,7 @@ async function generateSqlExplanation(sql, chartTitle) {
     let errorMessage;
     try {
         const completion = await groq_1.default.chat.completions.create({
-            model: 'llama-3.3-70b-versatile',
+            model: 'openai/gpt-oss-120b',
             messages: [
                 {
                     role: 'system',
@@ -93,7 +90,7 @@ async function generateSqlExplanation(sql, chartTitle) {
     finally {
         (0, aiMetricsLogger_1.logAICall)({
             callType: 'sql_explanation',
-            model: 'llama-3.3-70b-versatile',
+            model: 'openai/gpt-oss-120b',
             userPrompt: `Chart title: "${chartTitle}"`,
             success,
             errorMessage,

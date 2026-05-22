@@ -145,13 +145,13 @@ export default function InlineChartCard(props: Props) {
   }, [result.title, result.sql, reset]);
 
   if (isTextLookup) {
-    return (
+      return (
       <InlineChartTextResult
         result={result}
         isSaving={isSaving}
         isSaved={isSaved}
         error={error}
-        onRunSave={async () => runSave()}
+        onRunSave={async () => { await runSave(); }}
       />
     );
   }

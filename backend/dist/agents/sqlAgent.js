@@ -27,7 +27,7 @@ const ChartAgentResponseSchema = zod_1.z.object({
     yAxis: zod_1.z.string().nullable(),
     reasoning: zod_1.z.string().nullable(),
     isAnalyticsQuery: zod_1.z.boolean(),
-    clarificationNeeded: zod_1.z.string().nullable().optional(),
+    clarificationNeeded: zod_1.z.string().nullable(),
 });
 /**
  * Builds the SQL agent system prompt.
@@ -58,6 +58,7 @@ function buildSqlAgentSystemPrompt(schema, intent) {
         promptTokens_1.FROZEN_IDENTITY,
         promptTokens_1.FROZEN_SQL_RULES,
         promptTokens_1.FROZEN_COLUMN_CORRECTIONS,
+        promptTokens_1.FROZEN_FK_LABEL_RULES,
         promptTokens_1.FROZEN_WINDOW_FUNCTION_RULES,
         promptTokens_1.FROZEN_FILTER_RULES,
         promptTokens_1.FROZEN_ALLOWED_FUNCTIONS,
@@ -128,6 +129,7 @@ function deriveSemanticAlias(tableName) {
     return stripped;
 }
 function buildSqlAgentUserMessage(input, correctionNote) {
+    const promptSpecificConstraints = buildPromptSpecificConstraints(input.userPrompt);
     const lines = [
         `USER REQUEST: ${input.userPrompt}`,
         `DETECTED INTENT: ${input.intent.intent}`,
@@ -144,26 +146,38 @@ function buildSqlAgentUserMessage(input, correctionNote) {
     if (correctionNote) {
         lines.push('', correctionNote.trim());
     }
-    lines.push('', 'BEFORE GENERATING SQL: verify every column name against the live schema above.', 'If you need a company name, use the integer FK (companyid/relatedcompany) and JOIN if needed, or use denormalized companyname from tblassignjobcandidate only.', 'tbldeals has NO deleted column - only archived.', 'tbljob and tblcandidate use deleted, NOT archived.');
+    lines.push('', 'BEFORE GENERATING SQL: verify every column name against the live schema above.', 'If you need a company name, use the integer FK (companyid/relatedcompany) and JOIN if needed, or use denormalized companyname from tblassignjobcandidate only.', 'tbldeals has NO deleted column - only archived.', 'tbljob and tblcandidate use deleted, NOT archived.', 'Never select raw integer FK columns as analytical output labels.', 'For company labels: use tblassignjobcandidate.companyname.', 'For job labels: use tblassignjobcandidate.jobname or tbljob.name.', 'For candidate labels: use tblassignjobcandidate.candidatename.', 'tblcompany, tblrecruiter, tbluser — none of these exist in the allowed table set.');
+    if (promptSpecificConstraints.length > 0) {
+        lines.push('', 'PROMPT-SPECIFIC SQL CONSTRAINTS:', ...promptSpecificConstraints.map((rule) => `- ${rule}`));
+    }
     return lines.join('\n');
 }
-function buildMinimalRetryUserMessage(input, correctionNote, affectedTables) {
-    const lines = [
-        `USER REQUEST: ${input.userPrompt}`,
-        `DETECTED INTENT: ${input.intent.intent}`,
-        '',
-        'CORRECTION REQUIRED:',
-        correctionNote.trim(),
-        '',
-        'Relevant tables and valid columns:',
-    ];
-    for (const tbl of affectedTables) {
-        const tableMeta = input.schema.tables.find((t) => t.tableName.toLowerCase() === tbl.toLowerCase());
-        const cols = tableMeta ? tableMeta.columns.map((c) => c.columnName).join(', ') : '(unknown)';
-        lines.push(`- ${tbl}: [${cols}]`);
+function buildPromptSpecificConstraints(userPrompt) {
+    const normalizedPrompt = userPrompt.toLowerCase();
+    const constraints = [];
+    const asksTopNPerGroup = /\b(top\s*\d+|top)\b/.test(normalizedPrompt) && /\bper\b/.test(normalizedPrompt);
+    const mentionsWindow = /\brow_number|dense_rank|rank\s*\(|over\s*\(/.test(normalizedPrompt);
+    const asksDependencyRatio = /highest dependency on a single company|single company.*revenue|revenue dependency|revenue share|ratio/i.test(normalizedPrompt);
+    if (asksTopNPerGroup || mentionsWindow || asksDependencyRatio) {
+        constraints.push('Do not use CTEs (WITH), window functions (ROW_NUMBER, RANK, DENSE_RANK, OVER), or PARTITION BY.', 'Use flat subqueries only: pre-aggregate metrics in one subquery, then join or filter with correlated subquery logic.', 'For top-N per group, use GROUP BY + HAVING with a correlated subquery.', 'For running totals or ratios, use a self-join subquery.');
     }
-    lines.push('', 'Regenerate the SQL using ONLY the valid columns shown above. Preserve original aggregation intent and chart hint.');
-    return lines.join('\n');
+    const asksStdDevOutlier = /\bstandard deviation|stddev|deviation|2\s*standard\s*deviations?\b/.test(normalizedPrompt);
+    if (asksStdDevOutlier) {
+        constraints.push('Override generic multi-stage guidance for this query: use a flat SELECT only.', 'Do not use WITH clauses, derived tables, or subqueries in the FROM clause.', 'Use one SELECT with GROUP BY recruiter_id and HAVING AVG(clean_amount) > (global_avg + 2 * global_stddev).', 'Global statistics may be provided via a single-level CROSS JOIN aggregate block (no deeper nesting than one level).', "Keep amount cleaning as CAST(REPLACE(assignment.billingamount, ',', '') AS DECIMAL(15,2)).", 'Return recruiter_id and total/average metric aliases suitable for chart rendering.', 'In ORDER BY, repeat the full aggregate expression instead of relying on alias-only references.');
+    }
+    const asksCompanyLabels = /\bcompany|companies|client|clients|organization|firm\b/i.test(normalizedPrompt);
+    if (asksCompanyLabels) {
+        constraints.push('To show company names, use companyname from tblassignjobcandidate. Do NOT use companyid.', 'If querying tbljob, join tblassignjobcandidate on tbljob.id = tblassignjobcandidate.jobid to access companyname.', 'GROUP BY and ORDER BY must use companyname (string), not companyid (integer).');
+    }
+    const asksCandidateNames = /candidate name|candidates by name|top candidates/i.test(normalizedPrompt);
+    if (asksCandidateNames) {
+        constraints.push('Use candidatename from tblassignjobcandidate for candidate display names.', 'Do NOT select candidateid as a label column.');
+    }
+    const asksJobNames = /job name|jobs by name|which jobs|top jobs/i.test(normalizedPrompt);
+    if (asksJobNames) {
+        constraints.push('Use jobname from tblassignjobcandidate for job display names.', 'If querying tbljob directly, use tbljob.name AS job_name.', 'Do NOT select jobid as a label column.');
+    }
+    return constraints;
 }
 /**
  * Validates ORDER BY references are valid SELECT aliases or expressions.
@@ -215,92 +229,6 @@ function logSqlAgentEvent(input, payload) {
         latencyMs: payload.latencyMs,
         usage: payload.usage,
     });
-}
-function collectValidationIssues(sql) {
-    const issues = [];
-    const guard = (0, sqlGuard_1.validateSql)(sql);
-    if (!guard.safe) {
-        issues.push(guard.reason || 'SQL failed safety validation');
-    }
-    const groupByError = (0, sqlGuard_1.validateSqlForOnlyFullGroupBy)(sql);
-    if (groupByError) {
-        issues.push(groupByError);
-    }
-    if ((0, sqlGuard_1.hasNestedAggregates)(sql)) {
-        issues.push('Nested aggregate functions are not allowed. Move the inner aggregation into a subquery before applying the outer aggregate.');
-    }
-    if (hasDuplicateSelectAliases(sql)) {
-        issues.push('Duplicate SELECT aliases detected. Each projected column must use a unique alias.');
-    }
-    const orderByAliasError = findInvalidOrderByAlias(sql);
-    if (orderByAliasError) {
-        issues.push(orderByAliasError);
-    }
-    return issues;
-}
-function isMechanicalValidationError(reason) {
-    const MECHANICAL_ERRORS = [
-        'GROUP BY clause must not contain aggregate functions',
-        'Missing LIMIT clause',
-    ];
-    return MECHANICAL_ERRORS.some((error) => reason.includes(error));
-}
-function hasDuplicateSelectAliases(sql) {
-    const aliases = new Set();
-    const selectClause = /select([\s\S]*?)from/i.exec(sql)?.[1] || '';
-    for (const item of splitTopLevelCommaSeparated(selectClause)) {
-        const alias = extractSelectAlias(item);
-        if (!alias) {
-            continue;
-        }
-        const normalizedAlias = alias.toLowerCase();
-        if (aliases.has(normalizedAlias)) {
-            return true;
-        }
-        aliases.add(normalizedAlias);
-    }
-    return false;
-}
-function findInvalidOrderByAlias(sql) {
-    const orderByMatch = /\bORDER\s+BY\b([\s\S]*?)(?=\bLIMIT\b|$)/i.exec(sql);
-    if (!orderByMatch?.[1]) {
-        return null;
-    }
-    const selectClause = /select([\s\S]*?)from/i.exec(sql)?.[1] || '';
-    const projectedColumns = getProjectedSelectColumns(selectClause);
-    const orderByClause = orderByMatch[1];
-    for (const item of splitTopLevelCommaSeparated(orderByClause)) {
-        const trimmed = item.trim();
-        if (!trimmed)
-            continue;
-        const identifier = stripIdentifierQuotes(trimmed.split(/\s+/)[0].replace(/[`,]/g, '')).toLowerCase();
-        if (isSqlIdentifier(identifier) && projectedColumns.size > 0 && !projectedColumns.has(identifier) && !/\./.test(identifier)) {
-            return `ORDER BY references '${identifier}', which is not a projected SELECT alias. Use a real output column or repeat the full expression.`;
-        }
-    }
-    return null;
-}
-function getProjectedSelectColumns(selectClause) {
-    const projectedColumns = new Set();
-    for (const item of splitTopLevelCommaSeparated(selectClause)) {
-        const alias = extractSelectAlias(item);
-        if (alias) {
-            projectedColumns.add(alias.toLowerCase());
-        }
-        const trimmed = item.trim();
-        if (isSqlIdentifier(stripIdentifierQuotes(trimmed))) {
-            projectedColumns.add(stripIdentifierQuotes(trimmed).toLowerCase());
-            continue;
-        }
-        const qualifiedParts = trimmed.split('.');
-        if (qualifiedParts.length === 2) {
-            const columnPart = stripIdentifierQuotes(qualifiedParts[1].trim());
-            if (isSqlIdentifier(columnPart)) {
-                projectedColumns.add(columnPart.toLowerCase());
-            }
-        }
-    }
-    return projectedColumns;
 }
 function splitTopLevelCommaSeparated(input) {
     const parts = [];
@@ -413,13 +341,13 @@ async function generateSqlFromAgent(input) {
         let generatedSql;
         try {
             const completion = await groq_1.default.chat.completions.create({
-                model: 'llama-3.3-70b-versatile',
+                model: 'openai/gpt-oss-120b',
                 messages: [
                     { role: 'system', content: systemPrompt },
                     { role: 'user', content: userMessage },
                 ],
                 temperature: 0.1,
-                max_tokens: 1200,
+                max_tokens: 1800,
                 response_format: { type: 'json_object' },
             });
             usage = completion.usage;
@@ -443,7 +371,7 @@ async function generateSqlFromAgent(input) {
         }
         finally {
             logSqlAgentEvent(input, {
-                model: 'llama-3.3-70b-versatile',
+                model: 'openai/gpt-oss-120b',
                 callType: 'sql_generation',
                 success,
                 errorMessage,
@@ -452,301 +380,31 @@ async function generateSqlFromAgent(input) {
                 sqlFlow: {
                     stage: 'generation',
                     sql: generatedSql,
-                    validationPassed: success,
+                    structuralValidationPassed: success,
                 },
                 query: generatedSql ? { sql: generatedSql, stage: 'generation' } : undefined,
             });
         }
     };
-    let llmRetries = 0;
-    const callParseCompletion = async (userMessage, isRetry = false) => {
-        if (isRetry) {
-            llmRetries += 1;
-            if (llmRetries > 2) {
-                throw new Error('Max LLM retries exceeded');
-            }
-        }
+    const callParseCompletion = async (userMessage) => {
         return parseCompletion(userMessage);
     };
-    let response = await callParseCompletion(baseUserMessage, false);
+    const response = await callParseCompletion(baseUserMessage);
     if (response.sql) {
-        const currentSql = response.sql;
-        const semanticAliasRewrite = (0, sqlGuard_1.rewriteSemanticAliases)(response.sql, semanticAliasPlan);
-        response.sql = semanticAliasRewrite.sql;
-        response.sql = (0, sqlGuard_1.rewriteGroupByAliases)(response.sql);
-        response.sql = fixOrderByAliases(response.sql);
-        const normalization = (0, sqlGuard_1.normalizeReservedAliases)(response.sql);
-        response.sql = normalization.sql;
+        let currentSql = response.sql;
+        const semanticAliasRewrite = (0, sqlGuard_1.rewriteSemanticAliases)(currentSql, semanticAliasPlan);
+        currentSql = semanticAliasRewrite.sql;
+        currentSql = (0, sqlGuard_1.rewriteGroupByAliases)(currentSql);
+        currentSql = fixOrderByAliases(currentSql);
+        const normalization = (0, sqlGuard_1.normalizeReservedAliases)(currentSql);
+        currentSql = normalization.sql;
         if (response.xAxis && normalization.aliasMap[response.xAxis.toLowerCase()]) {
             response.xAxis = normalization.aliasMap[response.xAxis.toLowerCase()];
         }
         if (response.yAxis && normalization.aliasMap[response.yAxis.toLowerCase()]) {
             response.yAxis = normalization.aliasMap[response.yAxis.toLowerCase()];
         }
-        const schemaColumnMap = {};
-        const schemaTypeMap = {};
-        for (const t of input.schema.tables) {
-            const name = t.tableName.toLowerCase();
-            schemaColumnMap[name] = new Set(t.columns.map((c) => c.columnName.toLowerCase()));
-            schemaTypeMap[name] = {};
-            for (const c of t.columns) {
-                schemaTypeMap[name][c.columnName.toLowerCase()] = c.dataType;
-            }
-        }
-        const columnRefs = (0, sqlGuard_1.getColumnRefsFromSql)(response.sql);
-        const missingColumns = [];
-        const sanitizationMismatches = [];
-        for (const ref of columnRefs) {
-            const tbl = ref.table ? ref.table.toLowerCase() : null;
-            const col = ref.column ? ref.column.toLowerCase() : '';
-            if (tbl && !schemaColumnMap[tbl]?.has(col)) {
-                missingColumns.push({ table: tbl, column: col });
-            }
-        }
-        const lowerSql = response.sql.toLowerCase();
-        const replaceMatches = [...(lowerSql.matchAll(/replace\s*\(\s*([^,)]+)\s*,\s*'\s*,\s*'\s*\)/gi))];
-        for (const m of replaceMatches) {
-            const colRef = String(m[1]).replace(/[`"\s]/g, '');
-            const parts = colRef.split('.');
-            if (parts.length === 2) {
-                const tbl = parts[0].toLowerCase();
-                const col = parts[1].toLowerCase();
-                const dtype = schemaTypeMap[tbl]?.[col];
-                if (dtype && dtype !== 'varchar' && dtype !== 'text' && dtype !== 'char') {
-                    sanitizationMismatches.push(`${tbl}.${col} is ${dtype} but was wrapped in REPLACE/CLEANUP sanitization`);
-                }
-            }
-        }
-        let issues = collectValidationIssues(response.sql);
-        if (detectWindowFunctionMisuse(currentSql)) {
-            issues.push('CTEs and window functions are not allowed for chart SQL generation; rewrite using flat subqueries, correlated filtering, or self-joins.');
-        }
-        if (missingColumns.length > 0) {
-            const missingSoftDeletes = missingColumns.filter((m) => ['deleted', 'archived'].includes(m.column));
-            if (missingSoftDeletes.length > 0) {
-                const notes = missingSoftDeletes.map((m) => `${m.table}.${m.column}`).join(', ');
-                const correctionNote = `CORRECTION REQUIRED: The following referenced soft-delete columns do NOT exist: ${notes}. Remove these filters and regenerate a valid query referencing only existing columns.`;
-                console.warn('[SQLAgent] Missing soft-delete columns detected:', notes);
-                const affectedTables = [...new Set(missingSoftDeletes.map((m) => String(m.table).toLowerCase()))];
-                console.info('[SQLAgent] Sending minimal retry prompt for tables:', affectedTables.join(', '));
-                logSqlAgentEvent(input, {
-                    model: 'llama-3.3-70b-versatile',
-                    callType: 'sql_retry',
-                    success: true,
-                    latencyMs: 0,
-                    sqlFlow: {
-                        stage: 'retry',
-                        previousSql: currentSql,
-                        correctionNote,
-                        retried: true,
-                    },
-                });
-                const retried = await callParseCompletion(buildMinimalRetryUserMessage(input, correctionNote, affectedTables), true);
-                if (retried.sql) {
-                    const retriedSemanticRewrite = (0, sqlGuard_1.rewriteSemanticAliases)(retried.sql, semanticAliasPlan);
-                    retried.sql = retriedSemanticRewrite.sql;
-                    retried.sql = (0, sqlGuard_1.rewriteGroupByAliases)(retried.sql);
-                    retried.sql = fixOrderByAliases(retried.sql);
-                    const retriedNormalization = (0, sqlGuard_1.normalizeReservedAliases)(retried.sql);
-                    retried.sql = retriedNormalization.sql;
-                    if (retried.xAxis && retriedNormalization.aliasMap[retried.xAxis.toLowerCase()]) {
-                        retried.xAxis = retriedNormalization.aliasMap[retried.xAxis.toLowerCase()];
-                    }
-                    if (retried.yAxis && retriedNormalization.aliasMap[retried.yAxis.toLowerCase()]) {
-                        retried.yAxis = retriedNormalization.aliasMap[retried.yAxis.toLowerCase()];
-                    }
-                    const retriedIssues = collectValidationIssues(retried.sql);
-                    if (retriedIssues.length === 0) {
-                        response = retried;
-                        issues = retriedIssues;
-                    }
-                    else {
-                        throw new Error(`SQL validation failed: ${retriedIssues.join(' | ')}`);
-                    }
-                }
-            }
-            else {
-                for (const m of missingColumns) {
-                    issues.push(`Column '${m.column}' does not exist on table '${m.table || 'unknown'}'`);
-                }
-            }
-        }
-        if (sanitizationMismatches.length > 0) {
-            for (const s of sanitizationMismatches)
-                issues.push(s);
-        }
-        if (issues.length > 0) {
-            const validationMessage = issues.join(' | ');
-            logSqlAgentEvent(input, {
-                model: 'llama-3.3-70b-versatile',
-                callType: 'sql_validation',
-                success: false,
-                latencyMs: 0,
-                errorMessage: validationMessage,
-                sqlFlow: {
-                    stage: 'validation',
-                    sql: currentSql,
-                    validationPassed: false,
-                    validationIssues: [...issues],
-                },
-                query: currentSql ? { sql: currentSql, stage: 'validation' } : undefined,
-            });
-            console.error(`[SQLAgent] SQL validation failed. Reason: ${validationMessage}`);
-            console.error(`[SQLAgent] Generated SQL was:\n${response.sql}`);
-            let correctionNote;
-            const forbiddenColumnIssue = issues.find((issue) => /tblassignjobcandidate/i.test(issue) && /(deleted|archived)/i.test(issue));
-            const invalidColumnIssue = issues.find((issue) => /Column '.*?' does not exist on table '.*?'/i.test(issue));
-            if (forbiddenColumnIssue) {
-                correctionNote = `CORRECTION REQUIRED: Your previous query used column 'deleted' or 'archived' on tblassignjobcandidate. This column does NOT exist on tblassignjobcandidate. DO NOT add any deleted/archived filter to tblassignjobcandidate. Regenerate the query without any deleted or archived filter on tblassignjobcandidate.`;
-            }
-            else if (invalidColumnIssue) {
-                correctionNote = `CORRECTION REQUIRED: ${invalidColumnIssue} In JOIN queries, validate column ownership before assigning an alias. For example, 'name' belongs to tbljob, not tblassignjobcandidate. Regenerate the query with corrected column table aliases.`;
-            }
-            if (correctionNote) {
-                const affectedTables = [...new Set(missingColumns.map((m) => String(m.table).toLowerCase()))];
-                console.info('[SQLAgent] Sending minimal retry prompt for tables:', affectedTables.join(', '));
-                logSqlAgentEvent(input, {
-                    model: 'llama-3.3-70b-versatile',
-                    callType: 'sql_retry',
-                    success: true,
-                    latencyMs: 0,
-                    sqlFlow: {
-                        stage: 'retry',
-                        previousSql: currentSql,
-                        correctionNote,
-                        retried: true,
-                    },
-                });
-                const retried = await callParseCompletion(buildMinimalRetryUserMessage(input, correctionNote, affectedTables), true);
-                if (retried.sql) {
-                    const retriedSql = retried.sql;
-                    const retriedSemanticRewrite = (0, sqlGuard_1.rewriteSemanticAliases)(retried.sql, semanticAliasPlan);
-                    retried.sql = retriedSemanticRewrite.sql;
-                    retried.sql = (0, sqlGuard_1.rewriteGroupByAliases)(retried.sql);
-                    retried.sql = fixOrderByAliases(retried.sql);
-                    const retriedNormalization = (0, sqlGuard_1.normalizeReservedAliases)(retried.sql);
-                    retried.sql = retriedNormalization.sql;
-                    if (retried.xAxis && retriedNormalization.aliasMap[retried.xAxis.toLowerCase()]) {
-                        retried.xAxis = retriedNormalization.aliasMap[retried.xAxis.toLowerCase()];
-                    }
-                    if (retried.yAxis && retriedNormalization.aliasMap[retried.yAxis.toLowerCase()]) {
-                        retried.yAxis = retriedNormalization.aliasMap[retried.yAxis.toLowerCase()];
-                    }
-                    const retriedIssues = collectValidationIssues(retried.sql);
-                    logSqlAgentEvent(input, {
-                        model: 'llama-3.3-70b-versatile',
-                        callType: 'sql_retry',
-                        success: retriedIssues.length === 0,
-                        latencyMs: 0,
-                        errorMessage: retriedIssues.length > 0 ? retriedIssues.join(' | ') : undefined,
-                        sqlFlow: {
-                            stage: 'retry',
-                            sql: retried.sql,
-                            previousSql: currentSql,
-                            correctionNote,
-                            validationPassed: retriedIssues.length === 0,
-                            validationIssues: [...retriedIssues],
-                            retried: true,
-                        },
-                        query: { sql: retriedSql, stage: 'retry' },
-                    });
-                    if (retriedIssues.length === 0) {
-                        response = retried;
-                        issues = retriedIssues;
-                    }
-                    else {
-                        throw new Error(`SQL validation failed: ${retriedIssues.join(' | ')}`);
-                    }
-                }
-            }
-            if (issues.length === 0) {
-                return response;
-            }
-            const guardReason = issues.find((issue) => isMechanicalValidationError(issue));
-            if (guardReason && response.sql) {
-                const fixedSql = (0, sqlGuard_1.stripAggregatesFromGroupBy)(response.sql);
-                const revalidation = (0, sqlGuard_1.validateSql)(fixedSql);
-                if (revalidation.safe && revalidation.sanitizedSql) {
-                    console.warn('[SQLAgent] Auto-fixed mechanical SQL error', {
-                        original: response.sql,
-                        fixed: fixedSql,
-                        reason: validationMessage,
-                    });
-                    response.sql = revalidation.sanitizedSql;
-                    logSqlAgentEvent(input, {
-                        model: 'llama-3.3-70b-versatile',
-                        callType: 'sql_validation',
-                        success: true,
-                        latencyMs: 0,
-                        errorMessage: undefined,
-                        sqlFlow: {
-                            stage: 'final',
-                            sql: response.sql,
-                            previousSql: currentSql,
-                            validationPassed: true,
-                            validationIssues: [...issues],
-                            transformations: ['stripAggregatesFromGroupBy'],
-                        },
-                        query: { sql: response.sql, sanitizedSql: revalidation.sanitizedSql, stage: 'final' },
-                    });
-                }
-                else {
-                    logSqlAgentEvent(input, {
-                        model: 'llama-3.3-70b-versatile',
-                        callType: 'sql_validation',
-                        success: false,
-                        latencyMs: 0,
-                        errorMessage: validationMessage,
-                        sqlFlow: {
-                            stage: 'validation',
-                            sql: response.sql,
-                            previousSql: currentSql,
-                            validationPassed: false,
-                            validationIssues: [...issues],
-                        },
-                        query: { sql: response.sql, stage: 'validation' },
-                    });
-                    throw new Error(`SQL validation failed: ${validationMessage}`);
-                }
-            }
-            else {
-                logSqlAgentEvent(input, {
-                    model: 'llama-3.3-70b-versatile',
-                    callType: 'sql_validation',
-                    success: false,
-                    latencyMs: 0,
-                    errorMessage: validationMessage,
-                    sqlFlow: {
-                        stage: 'validation',
-                        sql: currentSql,
-                        previousSql: currentSql,
-                        validationPassed: false,
-                        validationIssues: [...issues],
-                    },
-                    query: { sql: currentSql, stage: 'validation' },
-                });
-                throw new Error(`SQL validation failed: ${validationMessage}`);
-            }
-        }
-        else {
-            const guard = (0, sqlGuard_1.validateSql)(currentSql);
-            if (guard.sanitizedSql) {
-                response.sql = guard.sanitizedSql;
-            }
-            logSqlAgentEvent(input, {
-                model: 'llama-3.3-70b-versatile',
-                callType: 'sql_validation',
-                success: true,
-                latencyMs: 0,
-                sqlFlow: {
-                    stage: 'final',
-                    sql: response.sql ?? currentSql,
-                    validationPassed: true,
-                    transformations: guard.sanitizedSql && guard.sanitizedSql !== currentSql ? ['validateSqlSanitized'] : undefined,
-                },
-                query: { sql: response.sql ?? currentSql, sanitizedSql: guard.sanitizedSql, stage: 'final' },
-            });
-        }
+        response.sql = currentSql;
     }
     return response;
 }
