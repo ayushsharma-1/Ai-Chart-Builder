@@ -539,29 +539,34 @@ function injectAccountIdIntoSelect(selectNode: any, accountId: number): void {
   const seenAliases = new Set<string>();
   let whereClause = selectNode.where;
 
-  console.info('[SQL] injectAccountIdIntoSelect table nodes:', tableNodes.map((tableNode) => ({
-    type: tableNode?.type,
-    table: tableNode?.table,
-    as: tableNode?.as,
-  })));
+  const injectionTrace = {
+    tableNodes: tableNodes.map((tableNode) => ({
+      table: tableNode?.table,
+      alias: tableNode?.as || null,
+      join: tableNode?.join || null,
+    })),
+    injectedTables: [] as Array<{ tableName: string; alias: string; accountId: number }>,
+    skippedTables: [] as Array<{ tableName: string; reason: string }>,
+    duplicateAliases: [] as Array<{ tableName: string; alias: string }>,
+  };
 
   for (const tableNode of tableNodes) {
     const tableName = normalizeTableName(tableNode?.table);
     if (!ALLOWED_TABLES.has(tableName)) {
-      console.info('[SQL] Skipping table for accountId injection:', { tableName, reason: 'not in allowed tables' });
+      injectionTrace.skippedTables.push({ tableName, reason: 'not in allowed tables' });
       continue;
     }
 
     const alias = normalizeName(tableNode?.as) || tableName;
     const aliasKey = `${tableName}:${alias}`;
     if (seenAliases.has(aliasKey)) {
-      console.info('[SQL] Skipping duplicate table alias during accountId injection:', { tableName, alias });
+      injectionTrace.duplicateAliases.push({ tableName, alias });
       continue;
     }
 
     seenAliases.add(aliasKey);
     const condition = buildAccountIdCondition(alias, accountId);
-    console.info('[SQL] Adding accountId condition for table:', { tableName, alias, accountId });
+    injectionTrace.injectedTables.push({ tableName, alias, accountId });
     whereClause = whereClause
       ? {
           type: 'binary_expr',
@@ -574,20 +579,17 @@ function injectAccountIdIntoSelect(selectNode: any, accountId: number): void {
 
   if (whereClause) {
     selectNode.where = whereClause;
-    console.info('[SQL] Select where updated for accountId injection:', {
-      selectType: selectNode?.type,
-      hasWhere: Boolean(selectNode.where),
-    });
   }
+
+  console.info('[SQL] AccountId injection trace:', injectionTrace);
 }
 
 export function injectAccountIdFilter(sql: string, accountId: string): string {
   const sanitizedAccountId = sanitizeAccountId(accountId);
   const trimmed = sql.trim().replace(/;\s*$/, '');
 
-  console.info('[SQL] injectAccountIdFilter invoked before astify', {
-    sanitizedAccountId,
-    hasSql: Boolean(trimmed),
+  console.info('[SQL] AccountId injection start:', {
+    accountId: sanitizedAccountId,
     sqlPreview: trimmed.slice(0, 300),
   });
 
@@ -616,8 +618,11 @@ export function injectAccountIdFilter(sql: string, accountId: string): string {
     throw new Error(`Unable to reconstruct SQL after account filter injection: ${error?.message || 'sqlify failed'}`);
   }
 
-  console.info('[SQL] SQL after accountId injection:', rewrittenSql);
-  console.info('[SQL] Root SELECT where after injection:', ast?.where ? 'present' : 'missing');
+  console.info('[SQL] AccountId injection result:', {
+    accountId: sanitizedAccountId,
+    rootWherePresent: Boolean(ast?.where),
+    executedSqlPreview: rewrittenSql.slice(0, 500),
+  });
 
   const postValidation = validateSql(rewrittenSql);
   if (!postValidation.safe || !postValidation.sanitizedSql) {

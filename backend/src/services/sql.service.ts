@@ -83,6 +83,7 @@ export async function runQuery(sql: string, params: unknown[] = [], options: Run
       model: 'mysql2',
       sessionId: options.sessionId,
       userPrompt: options.userPrompt,
+      accountId: options.accountId,
       success: false,
       errorMessage,
       errorDetails: {
@@ -92,6 +93,7 @@ export async function runQuery(sql: string, params: unknown[] = [], options: Run
       query: {
         sql,
         sanitizedSql: guard.sanitizedSql,
+        executedSql: guard.sanitizedSql,
         params,
         cacheKey: null,
         stage: 'validation',
@@ -106,7 +108,11 @@ export async function runQuery(sql: string, params: unknown[] = [], options: Run
     ? injectAccountIdFilter(guard.sanitizedSql, options.accountId)
     : guard.sanitizedSql;
 
-  console.info('[SQL] Final executable SQL before mysql2:', executableSql);
+  console.info('[SQL] Prepared executed SQL:', {
+    accountId: options.accountId,
+    originalSqlPreview: guard.sanitizedSql.slice(0, 300),
+    executedSqlPreview: executableSql.slice(0, 500),
+  });
 
   const ttlSeconds = options.ttlSeconds ?? 0;
   const staleWhileRevalidateSeconds = options.staleWhileRevalidateSeconds ?? 0;
@@ -162,6 +168,31 @@ export async function runQuery(sql: string, params: unknown[] = [], options: Run
       });
     }
 
+    logAICall({
+      callType: 'sql_execution',
+      model: 'mysql2',
+      sessionId: options.sessionId,
+      userPrompt: options.userPrompt,
+      accountId: options.accountId,
+      success: true,
+      query: {
+        sql,
+        sanitizedSql: guard.sanitizedSql,
+        executedSql: executableSql,
+        params,
+        cacheKey,
+        stage: 'execution',
+      },
+      sqlFlow: {
+        stage: 'execution',
+        originalSql: options.originalSql || sql,
+        correctedSql: options.correctedSql || guard.sanitizedSql,
+        executedSql: executableSql,
+        retryCount: options.retryCount || 0,
+      },
+      latencyMs: executionTimeMs,
+    });
+
     return {
       data,
       rowCount: data.length,
@@ -183,6 +214,7 @@ export async function runQuery(sql: string, params: unknown[] = [], options: Run
       model: 'mysql2',
       sessionId: options.sessionId,
       userPrompt: options.userPrompt,
+      accountId: options.accountId,
       success: false,
       errorMessage: error?.message || 'Query execution failed',
       errorDetails: {
@@ -192,6 +224,7 @@ export async function runQuery(sql: string, params: unknown[] = [], options: Run
       query: {
         sql,
         sanitizedSql: executableSql,
+        executedSql: executableSql,
         params,
         cacheKey,
         stage: 'execution',
@@ -200,6 +233,7 @@ export async function runQuery(sql: string, params: unknown[] = [], options: Run
         stage: 'execution',
         originalSql: options.originalSql || sql,
         correctedSql: options.correctedSql || guard.sanitizedSql,
+        executedSql: executableSql,
         retryCount: options.retryCount || 0,
       },
       latencyMs: Date.now() - start,

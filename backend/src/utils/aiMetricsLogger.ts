@@ -24,6 +24,7 @@ export interface AIMetricsEntry {
   sqlFlow?: {
     stage: 'generation' | 'validation' | 'retry' | 'execution' | 'blocked' | 'final';
     sql?: string;
+    executedSql?: string;
     previousSql?: string;
     correctionNote?: string;
     structuralValidationPassed?: boolean;
@@ -37,6 +38,7 @@ export interface AIMetricsEntry {
   query?: {
     sql?: string;
     sanitizedSql?: string;
+    executedSql?: string;
     params?: unknown[];
     cacheKey?: string | null;
     stage?: string;
@@ -131,6 +133,7 @@ export interface LogAICallInput {
   query?: AIMetricsEntry['query'];
   errorDetails?: AIMetricsEntry['errorDetails'];
   latencyMs: number;
+  accountId?: string;
   usage?: {
     prompt_tokens: number;
     completion_tokens: number;
@@ -154,6 +157,7 @@ export function logAICall(input: LogAICallInput): void {
     userPrompt: input.userPrompt ? input.userPrompt.slice(0, 200) : undefined,
     success: input.success,
     errorMessage: input.errorMessage,
+    accountId: input.accountId,
     sqlFlow: input.sqlFlow,
     query: input.query,
     errorDetails: input.errorDetails,
