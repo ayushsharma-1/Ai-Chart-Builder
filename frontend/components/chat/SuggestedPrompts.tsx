@@ -8,8 +8,8 @@ const PROMPTS = [
   'Show candidates by status this month',
   'Top jobs by number of applicants',
   'Hiring pipeline stage breakdown',
-  'Deal value won vs lost this quarter',
   'Candidates added per week last 3 months',
+  'Show recruiter-wise monthly placement growth and revenue trends',
   'Jobs by department',
 ];
 

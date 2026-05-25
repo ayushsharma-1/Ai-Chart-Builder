@@ -10,13 +10,17 @@ intent_analysis  [llama — cheap]
 sql_generation   [gpt-oss-120b — expensive, full prompt]
     ↓
 node-sql-parser AST validation  [zero cost, deterministic]
-    ├── PASS → execute query
-    │              ├── success → return chart
-    │              └── DB error → fix_agent [gpt-oss-120b, small prompt: sql+error only] → re-execute once
+    ├── PASS → AST injection (post-validation rewrite)
+    │              ├── injectAccountIdFilter() — when `accountId` is supplied, add `table_alias.accountid = <id>` predicates to the root SELECT WHERE for each allowed table
+    │              ├── the injector emits a compact structured trace (tables discovered, injected targets, duplicate aliases skipped)
+    │              ├── execute query
+    │              │    ├── success → write executed SQL and metrics to ai-metrics log → return chart
+    │              │    └── DB error → fix_agent [gpt-oss-120b, small prompt: sql+error only] → re-execute once
+    │              └── ALL executed SQLs (happy and error paths) are persisted to ai-metrics.ndjson with `executedSql` and `accountId`
     └── FAIL → fix_agent [gpt-oss-120b, small prompt: sql+reason+rules]
                    ↓
               AST validation again
-                   ├── PASS → execute
+                   ├── PASS → proceed with AST injection + execution
                    └── FAIL → return error to user (no more retries)
 
 If anything breaks along the way, we either fix it automatically or tell the user why we couldn't answer.
