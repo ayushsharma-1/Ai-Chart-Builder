@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 import api from '@/lib/api';
 import { ChartResult, ChartType, SavedChart } from '@/types';
+import { useAccountId } from './useAccountId';
 
 function normalizeChartConfig(result: ChartResult) {
   const yAxisList = Array.isArray(result.chartConfig.yAxis)
@@ -20,18 +21,28 @@ function normalizeChartConfig(result: ChartResult) {
 }
 
 export function useCharts() {
+  const { accountId } = useAccountId();
   const [savedCharts, setSavedCharts] = useState<SavedChart[]>([]);
 
   const fetchCharts = useCallback(async () => {
-    const { data } = await api.get('/api/charts');
+    if (!accountId) {
+      setSavedCharts([]);
+      return;
+    }
+
+    const { data } = await api.get('/api/charts', { params: { accountId } });
     setSavedCharts(data.charts);
-  }, []);
+  }, [accountId]);
 
   useEffect(() => {
     fetchCharts().catch((error) => console.error('Failed to fetch charts:', error));
   }, [fetchCharts]);
 
   const saveChart = useCallback(async (result: ChartResult, overrideType?: ChartType, reportId?: string) => {
+    if (!accountId) {
+      throw new Error('Account ID is required to save a chart.');
+    }
+
     const chartConfig = normalizeChartConfig(result);
     const payload = {
       title: result.title,
@@ -46,6 +57,7 @@ export function useCharts() {
       chartConfidence: result.chartConfidence,
       chartConfig,
       dataSnapshot: result.data,
+      accountId,
       executionMetadata: result.executionMetadata || {
         rowCount: result.rowCount,
         queryDurationMs: result.executionTimeMs,
@@ -62,16 +74,16 @@ export function useCharts() {
 
     await fetchCharts();
     return data.chart as SavedChart;
-  }, [fetchCharts]);
+  }, [accountId, fetchCharts]);
 
   const deleteChart = useCallback(async (id: string) => {
-    await api.delete(`/api/charts/${id}`);
+    await api.delete(`/api/charts/${id}`, { params: { accountId } });
     setSavedCharts((previous) => previous.filter((chart) => chart._id !== id));
-  }, []);
+  }, [accountId]);
 
   const updatePosition = useCallback(async (id: string, gridPosition: SavedChart['gridPosition']) => {
-    await api.patch(`/api/charts/${id}/position`, { gridPosition });
-  }, []);
+    await api.patch(`/api/charts/${id}/position`, { gridPosition, accountId });
+  }, [accountId]);
 
   return { savedCharts, saveChart, deleteChart, updatePosition, fetchCharts };
 }

@@ -1,12 +1,12 @@
 import { getRelevantSchemaContext } from './dataModel';
 import { getRelevantSemanticMetricPrompt } from './semanticMetrics';
-import {
-  FROZEN_IDENTITY,
-  FROZEN_SQL_RULES,
-  FROZEN_FILTER_RULES,
-  FROZEN_ALLOWED_FUNCTIONS,
-  FROZEN_CHART_RULES,
-  FROZEN_OUTPUT_FORMAT,
+import * as promptTokens from './promptTokens';
+
+export {
+  FROZEN_IDENTITY as BASE_SYSTEM_PROMPT,
+  FROZEN_SQL_RULES as CORE_SQL_RULES,
+  FROZEN_CHART_RULES as CHART_RULES,
+  FROZEN_OUTPUT_FORMAT as OUTPUT_FORMAT_RULES,
 } from './promptTokens';
 
 export interface LLMRuntimeContext {
@@ -16,11 +16,12 @@ export interface LLMRuntimeContext {
   previousChartType?: string;
 }
 
-// Re-export under legacy names for backward compatibility
-export const BASE_SYSTEM_PROMPT = FROZEN_IDENTITY;
-export const CORE_SQL_RULES = FROZEN_SQL_RULES;
-export const CHART_RULES = FROZEN_CHART_RULES;
-export const OUTPUT_FORMAT_RULES = FROZEN_OUTPUT_FORMAT;
+export {
+  FROZEN_IDENTITY as BASE_SYSTEM_PROMPT,
+  FROZEN_SQL_RULES as CORE_SQL_RULES,
+  FROZEN_CHART_RULES as CHART_RULES,
+  FROZEN_OUTPUT_FORMAT as OUTPUT_FORMAT_RULES,
+} from './promptTokens';
 
 export function buildRuntimeUserContext(userPrompt: string, context?: LLMRuntimeContext) {
   const lines = [
@@ -51,7 +52,17 @@ export function buildLLMSystemPrompt(userPrompt: string, context?: LLMRuntimeCon
   const schemaContext = getRelevantSchemaContext(intent);
   const metricContext = getRelevantSemanticMetricPrompt(intent);
 
-  return [FROZEN_IDENTITY, schemaContext, metricContext, FROZEN_SQL_RULES, FROZEN_FILTER_RULES, FROZEN_ALLOWED_FUNCTIONS, FROZEN_CHART_RULES, FROZEN_OUTPUT_FORMAT].filter(Boolean).join('\n\n');
+  return [
+    promptTokens.FROZEN_IDENTITY,
+    schemaContext,
+    metricContext,
+    promptTokens.FROZEN_SQL_RULES,
+    promptTokens.FROZEN_DISTINCT_RULES,
+    promptTokens.FROZEN_FILTER_RULES,
+    promptTokens.FROZEN_ALLOWED_FUNCTIONS,
+    promptTokens.FROZEN_CHART_RULES,
+    promptTokens.FROZEN_OUTPUT_FORMAT,
+  ].filter(Boolean).join('\n\n');
 }
 
 export function buildLLMMessages(userPrompt: string, context?: LLMRuntimeContext) {

@@ -1,6 +1,6 @@
 import pool from '../config/db';
 import { logAICall } from '../utils/aiMetricsLogger';
-import { QUERY_TIMEOUT_MS, validateSql } from '../utils/sqlGuard';
+import { QUERY_TIMEOUT_MS, injectAccountIdFilter, validateSql } from '../utils/sqlGuard';
 
 export interface QueryResult {
   data: unknown[];
@@ -19,6 +19,7 @@ interface RunQueryOptions {
   cacheKey?: string;
   ttlSeconds?: number;
   staleWhileRevalidateSeconds?: number;
+  accountId?: string;
   sessionId?: string;
   userPrompt?: string;
   retryCount?: number;
@@ -63,6 +64,7 @@ function classifySqlError(error: any): string {
 }
 
 export async function runQuery(sql: string, params: unknown[] = [], options: RunQueryOptions = {}): Promise<QueryResult> {
+  console.log('[SQL] accountId received:', options.accountId);
   const guard = validateSql(sql);
   const start = Date.now();
 
@@ -100,9 +102,15 @@ export async function runQuery(sql: string, params: unknown[] = [], options: Run
     throw new Error(errorMessage);
   }
 
+  const executableSql = options.accountId
+    ? injectAccountIdFilter(guard.sanitizedSql, options.accountId)
+    : guard.sanitizedSql;
+
+  console.info('[SQL] Final executable SQL before mysql2:', executableSql);
+
   const ttlSeconds = options.ttlSeconds ?? 0;
   const staleWhileRevalidateSeconds = options.staleWhileRevalidateSeconds ?? 0;
-  const cacheKey = ttlSeconds > 0 ? options.cacheKey || buildCacheKey(guard.sanitizedSql, params) : null;
+  const cacheKey = ttlSeconds > 0 ? options.cacheKey || buildCacheKey(executableSql, params) : null;
   const cached = cacheKey ? queryCache.get(cacheKey) : null;
   const now = Date.now();
 
@@ -135,9 +143,9 @@ export async function runQuery(sql: string, params: unknown[] = [], options: Run
   const connection = await pool.getConnection();
 
   try {
-    console.info('[SQL] Executing query:', guard.sanitizedSql);
+    console.info('[SQL] Executing query:', executableSql);
     await connection.query(`SET SESSION MAX_EXECUTION_TIME=${QUERY_TIMEOUT_MS}`);
-    const [rows] = await connection.query(guard.sanitizedSql, params);
+    const [rows] = await connection.query(executableSql, params);
     const data = rows as unknown[];
     const executionTimeMs = Date.now() - start;
 
@@ -163,7 +171,7 @@ export async function runQuery(sql: string, params: unknown[] = [], options: Run
   } catch (error: any) {
     console.error('[SQL] Query failed', {
       sql,
-      sanitizedSql: guard.sanitizedSql,
+      sanitizedSql: executableSql,
       params,
       cacheKey,
       executionTimeMs: Date.now() - start,
@@ -183,7 +191,7 @@ export async function runQuery(sql: string, params: unknown[] = [], options: Run
       },
       query: {
         sql,
-        sanitizedSql: guard.sanitizedSql,
+        sanitizedSql: executableSql,
         params,
         cacheKey,
         stage: 'execution',

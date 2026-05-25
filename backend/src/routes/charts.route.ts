@@ -161,6 +161,10 @@ router.post('/:id/explain', async (req: Request, res: Response) => {
 
 router.post('/:id/refresh', async (req: Request, res: Response) => {
   try {
+    const { accountId } = z.object({
+      accountId: z.string().regex(/^\d+$/, 'accountId must be a numeric string').min(1),
+    }).parse(req.body);
+
     const chart = await Chart.findById(req.params.id);
 
     if (!chart) {
@@ -169,6 +173,7 @@ router.post('/:id/refresh', async (req: Request, res: Response) => {
 
     const result = await runQuery(chart.sql, [], {
       ttlSeconds: 0,
+      accountId,
       userPrompt: `Chart refresh: ${chart.title}`,
       originalSql: chart.sql,
       retryCount: 0,

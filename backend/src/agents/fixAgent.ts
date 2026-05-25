@@ -3,6 +3,7 @@ import { validateSql } from '../utils/sqlGuard';
 import {
   FROZEN_COLUMN_CORRECTIONS,
   FROZEN_SQL_RULES,
+  FROZEN_DISTINCT_RULES,
   FROZEN_WINDOW_FUNCTION_RULES,
 } from '../utils/promptTokens';
 import { logAICall } from '../utils/aiMetricsLogger';
@@ -25,8 +26,9 @@ COMMON ERROR PATTERNS AND FIXES:
 6. "Unknown column 'job.category'" -> correct column is job_category
 7. "Unknown column 'assignment.placementdate'" -> correct column is joiningdate
 8. "Unknown column 'job.ownerid'" -> ownerid exists but alias must be tbljob.ownerid
-9. ONLY_FULL_GROUP_BY / PARTITION BY errors -> remove window functions and rewrite with flat subqueries
-10. Nested aggregates -> wrap inner aggregation in subquery/CTE first
+9. "Unknown column 'job.source'" -> tbljob has no source column. Use sourceid (int) joined to the source lookup table if available, or use tblassignjobcandidate.companyname as a grouping dimension instead. Never guess jobsource.
+10. ONLY_FULL_GROUP_BY / PARTITION BY errors -> remove window functions and rewrite with flat subqueries
+11. Nested aggregates -> wrap inner aggregation in subquery/CTE first
 
 Respond with ONLY the corrected SQL SELECT statement. No markdown. No explanation.
 `.trim();
@@ -37,6 +39,7 @@ const VALIDATION_FIX_SYSTEM_PROMPT = [
   'Return ONLY the corrected SQL SELECT statement. No explanation, no markdown.',
   '',
   FROZEN_SQL_RULES,
+  FROZEN_DISTINCT_RULES,
   FROZEN_WINDOW_FUNCTION_RULES,
   FROZEN_COLUMN_CORRECTIONS,
 ].join('\n\n').trim();

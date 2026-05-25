@@ -12,6 +12,7 @@ const CONFIDENCE_THRESHOLD = 0.65;
 
 export interface OrchestratorInput {
   userPrompt: string;
+  accountId: string;
   previousContext?: {
     previousPrompt?: string;
     previousTitle?: string;
@@ -269,7 +270,7 @@ async function executeSqlWithRepair(input: OrchestratorInput, sql: string) {
   if (!validation.safe || !validation.sanitizedSql) {
     const repairResult = await repairSqlAfterValidationFailure(input, sql, validation.reason || 'SQL failed validation');
     if (!repairResult.sql) {
-      return { fixAttempted: true, error: repairResult.error || { success: false, type: 'validation_error', message: 'I could not repair the SQL query. Please simplify the request and try again.' } as OrchestratorError };
+      return { fixAttempted: true, error: repairResult.error ?? { success: false, type: 'validation_error', message: 'I could not repair the SQL query. Please simplify the request and try again.' } };
     }
 
     currentSql = repairResult.sql;
@@ -280,6 +281,7 @@ async function executeSqlWithRepair(input: OrchestratorInput, sql: string) {
   try {
     const correctedSql = currentSql === sql ? undefined : currentSql;
     const queryResult = await runQuery(currentSql, [], {
+      accountId: input.accountId,
       sessionId: input.sessionId,
       userPrompt: input.userPrompt,
       originalSql: sql,
@@ -299,13 +301,14 @@ async function executeSqlWithRepair(input: OrchestratorInput, sql: string) {
 
     const repairResult = await repairSqlAfterExecutionFailure(input, sql, currentSql, mysqlError);
     if (!repairResult.sql) {
-      return { fixAttempted: true, error: repairResult.error || { success: false, type: 'error', message: 'Something went wrong. Please try again.' } as OrchestratorError };
+      return { fixAttempted: true, error: repairResult.error ?? { success: false, type: 'error', message: 'Something went wrong. Please try again.' } };
     }
 
     fixAgentCalls += 1;
 
     try {
       const queryResult = await runQuery(repairResult.sql, [], {
+        accountId: input.accountId,
         sessionId: input.sessionId,
         userPrompt: input.userPrompt,
         originalSql: sql,

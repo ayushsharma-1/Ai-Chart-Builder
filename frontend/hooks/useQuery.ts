@@ -6,6 +6,7 @@ import axios from 'axios';
 
 import api from '@/lib/api';
 import { ChatSession, ChartResult, Message } from '@/types';
+import { useAccountId } from './useAccountId';
 
 const STORAGE_KEY = 'lens.chat.state.v2';
 
@@ -229,6 +230,7 @@ function readStoredState(): StoredChatState | null {
 }
 
 export function useQuery() {
+  const { accountId } = useAccountId();
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string>('');
   const [isLoading, setIsLoading] = useState(false);
@@ -296,6 +298,10 @@ export function useQuery() {
   }, []);
 
   const sendPrompt = useCallback(async (prompt: string) => {
+    if (!accountId) {
+      return;
+    }
+
     const userMsg: Message = {
       id: uuid(),
       role: 'user',
@@ -325,6 +331,7 @@ export function useQuery() {
     try {
       const { data } = await api.post('/api/query', {
         prompt,
+        accountId,
         previousContext: currentChart ? {
           previousPrompt: currentChart.prompt,
           previousTitle: currentChart.title,
@@ -357,7 +364,7 @@ export function useQuery() {
     } finally {
       setIsLoading(false);
     }
-  }, [activeSessionId, currentChart]);
+  }, [accountId, activeSessionId, currentChart]);
 
   return {
     sessions,

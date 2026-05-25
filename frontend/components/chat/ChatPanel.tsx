@@ -17,9 +17,20 @@ interface Props {
   onSaveChart: (result: ChartResult, type: ChartType) => Promise<void>;
   onNewChat: () => void;
   activeSession?: ChatSession | null;
+  inputDisabled?: boolean;
+  inputPlaceholder?: string;
 }
 
-export default function ChatPanel({ messages, isLoading, onSend, onSaveChart, onNewChat, activeSession }: Readonly<Props>) {
+export default function ChatPanel({
+  messages,
+  isLoading,
+  onSend,
+  onSaveChart,
+  onNewChat,
+  activeSession,
+  inputDisabled = false,
+  inputPlaceholder = 'Ask about candidates, jobs, pipeline, or deals...',
+}: Readonly<Props>) {
   const [input, setInput] = useState('');
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -142,14 +153,15 @@ export default function ChatPanel({ messages, isLoading, onSend, onSaveChart, on
               value={input}
               onChange={(event) => setInput(event.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Ask about candidates, jobs, pipeline, or deals..."
+              disabled={inputDisabled}
+              placeholder={inputPlaceholder}
               rows={1}
-              className="min-h-[2.5rem] flex-1 resize-none bg-transparent text-sm leading-relaxed text-[#F0F0FF] outline-none placeholder:text-[#3F3F5C] overflow-y-auto"
+              className="min-h-[2.5rem] flex-1 resize-none bg-transparent text-sm leading-relaxed text-[#F0F0FF] outline-none placeholder:text-[#3F3F5C] overflow-y-auto disabled:cursor-not-allowed disabled:opacity-50"
               style={{ maxHeight: `${maxTextareaHeight}px` }}
             />
             <button
               onClick={handleSend}
-              disabled={!input.trim() || isLoading}
+              disabled={inputDisabled || !input.trim() || isLoading}
               className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl bg-[#6366F1] transition-colors hover:bg-[#5558E8] disabled:cursor-not-allowed disabled:opacity-30 shadow-lg shadow-indigo-500/20"
             >
               <Send size={13} className="text-white" />

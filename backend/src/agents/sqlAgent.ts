@@ -1,8 +1,10 @@
 import { z } from 'zod';
+import { Parser } from 'node-sql-parser';
 import groq from '../config/groq';
 import {
   FROZEN_IDENTITY,
   FROZEN_SQL_RULES,
+  FROZEN_DISTINCT_RULES,
   FROZEN_COLUMN_CORRECTIONS,
   FROZEN_FK_LABEL_RULES,
   FROZEN_WINDOW_FUNCTION_RULES,
@@ -18,6 +20,7 @@ import { normalizeReservedAliases, rewriteSemanticAliases, rewriteGroupByAliases
 import { logAICall } from '../utils/aiMetricsLogger';
 
 const SQL_KEYWORDS = new Set(['asc', 'desc', 'null', 'true', 'false', 'as', 'on', 'and', 'or', 'not', 'in', 'is', 'by', 'from', 'where', 'join', 'inner', 'left', 'right', 'outer', 'group', 'order', 'having', 'limit', 'union', 'all', 'distinct', 'case', 'when', 'then', 'else', 'end']);
+const parser = new Parser();
 const SEMANTIC_ALIAS_BY_TABLE: Record<string, string> = {
   tbljob: 'job',
   tblassignjobcandidate: 'assignment',
@@ -81,6 +84,7 @@ function buildSqlAgentSystemPrompt(schema: SchemaSnapshot, intent: IntentAnalysi
     // FROZEN FIRST (cache-optimized prefix)
     FROZEN_IDENTITY,
     FROZEN_SQL_RULES,
+    FROZEN_DISTINCT_RULES,
     FROZEN_COLUMN_CORRECTIONS,
     FROZEN_FK_LABEL_RULES,
     FROZEN_WINDOW_FUNCTION_RULES,
@@ -316,6 +320,140 @@ function detectWindowFunctionMisuse(sql: string): boolean {
   return /\bwith\b/i.test(sql) || /\bover\s*\(/i.test(sql);
 }
 
+function containsCaseWhen(node: any): boolean {
+  if (!node || typeof node !== 'object') {
+    return false;
+  }
+
+  if (node.type === 'case' || node.type === 'case_expr') {
+    return true;
+  }
+
+  for (const key of Object.keys(node)) {
+    const child = node[key];
+    if (Array.isArray(child)) {
+      if (child.some((item) => containsCaseWhen(item))) {
+        return true;
+      }
+    } else if (child && typeof child === 'object') {
+      if (containsCaseWhen(child)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function collectTableNamesFromAst(node: any, results = new Set<string>()): Set<string> {
+  if (!node || typeof node !== 'object') {
+    return results;
+  }
+
+  if (node.type === 'table') {
+    const tableName = String(node.table || '').toLowerCase().split('.').pop() || '';
+    if (tableName) {
+      results.add(tableName);
+    }
+  }
+
+  for (const key of Object.keys(node)) {
+    const child = node[key];
+    if (Array.isArray(child)) {
+      child.forEach((item) => collectTableNamesFromAst(item, results));
+    } else if (child && typeof child === 'object') {
+      collectTableNamesFromAst(child, results);
+    }
+  }
+
+  return results;
+}
+
+function collectSelectNodes(node: any, results: any[] = []): any[] {
+  if (!node || typeof node !== 'object') {
+    return results;
+  }
+
+  if (node.type === 'select') {
+    results.push(node);
+  }
+
+  for (const key of Object.keys(node)) {
+    const child = node[key];
+    if (Array.isArray(child)) {
+      child.forEach((item) => collectSelectNodes(item, results));
+    } else if (child && typeof child === 'object') {
+      collectSelectNodes(child, results);
+    }
+  }
+
+  return results;
+}
+
+function getCountArgumentName(expr: any): string {
+  const arg = expr?.args;
+  if (arg === '*') {
+    return '*';
+  }
+
+  if (typeof arg === 'object' && arg !== null) {
+    return String(arg.column || arg.value || '').toLowerCase();
+  }
+
+  return String(arg || '').toLowerCase();
+}
+
+function isDuplicateProneCount(expr: any): boolean {
+  if (expr?.type !== 'aggr_func') {
+    return false;
+  }
+
+  if (String(expr.name || '').toUpperCase() !== 'COUNT') {
+    return false;
+  }
+
+  if (expr.distinct || expr.distinct === true) {
+    return false;
+  }
+
+  if (containsCaseWhen(expr)) {
+    return false;
+  }
+
+  const argName = getCountArgumentName(expr);
+  return argName === '*' || argName === 'candidateid' || argName === 'jobid';
+}
+
+function auditDistinctUsage(sql: string): void {
+  let ast: any;
+  try {
+    const result = parser.astify(sql, { database: 'MySQL' });
+    ast = Array.isArray(result) ? result[0] : result;
+  } catch {
+    return;
+  }
+
+  if (!ast) {
+    return;
+  }
+
+  const tables = collectTableNamesFromAst(ast);
+  if (!tables.has('tblassignjobcandidate')) {
+    return;
+  }
+
+  const selectNodes = collectSelectNodes(ast);
+
+  for (const selectNode of selectNodes) {
+    const hasDuplicateProneCount = (selectNode?.columns || []).some((column) => isDuplicateProneCount(column?.expr));
+
+    if (hasDuplicateProneCount) {
+      console.warn('[SQLAgent] Potential duplicate count — COUNT without DISTINCT on tblassignjobcandidate');
+        return;
+    }
+  }
+}
+
 function logSqlAgentEvent(input: SqlAgentInput, payload: {
   model: string;
   callType: 'sql_generation';
@@ -544,6 +682,8 @@ export async function generateSqlFromAgent(input: SqlAgentInput): Promise<ChartA
 
     const normalization = normalizeReservedAliases(currentSql);
     currentSql = normalization.sql;
+
+    auditDistinctUsage(currentSql);
 
     if (response.xAxis && normalization.aliasMap[response.xAxis.toLowerCase()]) {
       response.xAxis = normalization.aliasMap[response.xAxis.toLowerCase()];

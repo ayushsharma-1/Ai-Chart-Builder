@@ -478,6 +478,155 @@ export function validateSql(sql: string): SqlGuardResult {
   return { safe: true, sanitizedSql, transformations: transformations.length ? transformations : undefined };
 }
 
+function sanitizeAccountId(accountId: string): number {
+  const digits = String(accountId || '').replace(/\D/g, '');
+
+  if (!digits) {
+    throw new Error('Invalid accountId.');
+  }
+
+  const parsed = Number.parseInt(digits, 10);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error('Invalid accountId.');
+  }
+
+  return parsed;
+}
+
+function buildAccountIdCondition(tableAlias: string, accountId: number) {
+  return {
+    type: 'binary_expr',
+    operator: '=',
+    left: {
+      type: 'column_ref',
+      table: tableAlias,
+      column: 'accountid',
+    },
+    right: {
+      type: 'number',
+      value: accountId,
+    },
+  };
+}
+
+function collectTableNodes(node: any, results: any[] = []): any[] {
+  if (!node || typeof node !== 'object') {
+    return results;
+  }
+
+  if (node.type === 'select') {
+    return results;
+  }
+
+  if (node.type === 'table' || typeof node.table === 'string') {
+    results.push(node);
+  }
+
+  for (const key of Object.keys(node)) {
+    const child = node[key];
+    if (Array.isArray(child)) {
+      child.forEach((item) => collectTableNodes(item, results));
+    } else if (child && typeof child === 'object') {
+      collectTableNodes(child, results);
+    }
+  }
+
+  return results;
+}
+
+function injectAccountIdIntoSelect(selectNode: any, accountId: number): void {
+  const tableNodes = collectTableNodes(selectNode?.from || []);
+  const seenAliases = new Set<string>();
+  let whereClause = selectNode.where;
+
+  console.info('[SQL] injectAccountIdIntoSelect table nodes:', tableNodes.map((tableNode) => ({
+    type: tableNode?.type,
+    table: tableNode?.table,
+    as: tableNode?.as,
+  })));
+
+  for (const tableNode of tableNodes) {
+    const tableName = normalizeTableName(tableNode?.table);
+    if (!ALLOWED_TABLES.has(tableName)) {
+      console.info('[SQL] Skipping table for accountId injection:', { tableName, reason: 'not in allowed tables' });
+      continue;
+    }
+
+    const alias = normalizeName(tableNode?.as) || tableName;
+    const aliasKey = `${tableName}:${alias}`;
+    if (seenAliases.has(aliasKey)) {
+      console.info('[SQL] Skipping duplicate table alias during accountId injection:', { tableName, alias });
+      continue;
+    }
+
+    seenAliases.add(aliasKey);
+    const condition = buildAccountIdCondition(alias, accountId);
+    console.info('[SQL] Adding accountId condition for table:', { tableName, alias, accountId });
+    whereClause = whereClause
+      ? {
+          type: 'binary_expr',
+          operator: 'AND',
+          left: whereClause,
+          right: condition,
+        }
+      : condition;
+  }
+
+  if (whereClause) {
+    selectNode.where = whereClause;
+    console.info('[SQL] Select where updated for accountId injection:', {
+      selectType: selectNode?.type,
+      hasWhere: Boolean(selectNode.where),
+    });
+  }
+}
+
+export function injectAccountIdFilter(sql: string, accountId: string): string {
+  const sanitizedAccountId = sanitizeAccountId(accountId);
+  const trimmed = sql.trim().replace(/;\s*$/, '');
+
+  console.info('[SQL] injectAccountIdFilter invoked before astify', {
+    sanitizedAccountId,
+    hasSql: Boolean(trimmed),
+    sqlPreview: trimmed.slice(0, 300),
+  });
+
+  let ast: any;
+  try {
+    const result = parser.astify(trimmed, { database: 'MySQL' });
+    ast = Array.isArray(result) ? result[0] : result;
+  } catch (error: any) {
+    throw new Error(`Unable to inject account filter: ${error?.message || 'invalid SQL'}`);
+  }
+
+  if (!ast) {
+    throw new Error('Unable to inject account filter into empty SQL.');
+  }
+
+  const selectNodes = [ast, ...collectNodes(ast, 'select').filter((node) => node !== ast)];
+
+  for (const selectNode of selectNodes) {
+    injectAccountIdIntoSelect(selectNode, sanitizedAccountId);
+  }
+
+  let rewrittenSql: string;
+  try {
+    rewrittenSql = parser.sqlify(ast, { database: 'MySQL' });
+  } catch (error: any) {
+    throw new Error(`Unable to reconstruct SQL after account filter injection: ${error?.message || 'sqlify failed'}`);
+  }
+
+  console.info('[SQL] SQL after accountId injection:', rewrittenSql);
+  console.info('[SQL] Root SELECT where after injection:', ast?.where ? 'present' : 'missing');
+
+  const postValidation = validateSql(rewrittenSql);
+  if (!postValidation.safe || !postValidation.sanitizedSql) {
+    throw new Error(postValidation.reason || 'Injected SQL failed validation.');
+  }
+
+  return postValidation.sanitizedSql;
+}
+
 export function normalizeReservedAliases(sql: string): ReservedAliasNormalizationResult {
   let ast: any;
   try {

@@ -11,10 +11,10 @@ import queryRoute from './routes/query.route';
 import reportsRoute from './routes/reports.route';
 
 const app = express();
-const PORT = Number.parseInt(process.env.PORT || '3001', 10);
+const PORT = Number.parseInt(process.env.PORT || '3002', 10);
 
 app.disable('x-powered-by');
-app.use(cors({ origin: process.env.CORS_ORIGIN || 'http://localhost:3500' }));
+app.use(cors({ origin: process.env.CORS_ORIGIN || 'http://localhost:3600' }));
 app.use(express.json({ limit: '1mb' }));
 app.use(requestLogger);
 

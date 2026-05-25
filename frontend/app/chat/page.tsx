@@ -1,13 +1,16 @@
 'use client';
 
 import ChatPanel from '@/components/chat/ChatPanel';
+import AccountIdModal from '@/components/ui/AccountIdModal';
 import Navbar from '@/components/ui/Navbar';
 import Sidebar from '@/components/ui/Sidebar';
+import { useAccountId } from '@/hooks/useAccountId';
 import { useCharts } from '@/hooks/useCharts';
 import { useQuery } from '@/hooks/useQuery';
 import { ChartType } from '@/types';
 
 export default function ChatPage() {
+  const { accountId } = useAccountId();
   const { sessions, activeSession, activeSessionId, messages, isLoading, sendPrompt, newChat, selectChat, deleteChat } = useQuery();
   const { saveChart } = useCharts();
 
@@ -33,8 +36,11 @@ export default function ChatPage() {
           onSaveChart={handleSave}
           onNewChat={newChat}
           activeSession={activeSession}
+          inputDisabled={!accountId}
+          inputPlaceholder={accountId ? 'Ask about candidates, jobs, pipeline, or deals...' : 'Set your Account ID to start'}
         />
       </div>
+      {!accountId && <AccountIdModal />}
     </div>
   );
 }

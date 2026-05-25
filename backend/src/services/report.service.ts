@@ -334,7 +334,7 @@ export async function restoreReportVersion(reportId: string, version: number) {
   return hydrateReport(report.toObject());
 }
 
-export async function refreshReportCharts(reportId: string, options: { persistSnapshots?: boolean } = {}) {
+export async function refreshReportCharts(reportId: string, options: { persistSnapshots?: boolean; accountId: string }) {
   const report = await Report.findById(reportId);
 
   if (!report) {
@@ -352,6 +352,7 @@ export async function refreshReportCharts(reportId: string, options: { persistSn
       const result = await runQuery(chart.sql, [], {
         ttlSeconds: report.refreshPolicy?.staleAfterSeconds || 300,
         staleWhileRevalidateSeconds: 60,
+        accountId: options.accountId,
       });
 
       const executionMetadata = {

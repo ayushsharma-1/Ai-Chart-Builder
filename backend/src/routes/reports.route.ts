@@ -230,8 +230,12 @@ router.post('/:id/refresh', async (req: Request, res: Response) => {
   try {
     const payload = z.object({
       persistSnapshots: z.boolean().optional(),
+      accountId: z.string().regex(/^\d+$/, 'accountId must be a numeric string').min(1),
     }).parse(req.body);
-    const result = await refreshReportCharts(req.params.id, { persistSnapshots: payload.persistSnapshots });
+    const result = await refreshReportCharts(req.params.id, {
+      persistSnapshots: payload.persistSnapshots,
+      accountId: payload.accountId,
+    });
 
     if (!result) {
       return res.status(404).json({ success: false, message: 'Report not found.' });

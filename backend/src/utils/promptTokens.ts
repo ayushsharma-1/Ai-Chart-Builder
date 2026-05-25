@@ -88,6 +88,49 @@ WRONG:  SELECT DATE_FORMAT(...) AS month ... GROUP BY month
 CORRECT: SELECT DATE_FORMAT(FROM_UNIXTIME(createdon), '%Y-%m') AS month ... GROUP BY DATE_FORMAT(FROM_UNIXTIME(createdon), '%Y-%m')
 ====== END HARD CONSTRAINTS ======`.trim();
 
+export const FROZEN_DISTINCT_RULES = `
+DISTINCT AND DEDUPLICATION RULES:
+
+1. COUNT of candidates across assignments:
+  When counting how many candidates did something (applied, were placed, etc.),
+  always use COUNT(DISTINCT candidateid), not COUNT(*) or COUNT(candidateid).
+  A candidate can have multiple rows in tblassignjobcandidate for the same or different jobs.
+
+2. COUNT of jobs:
+  When counting jobs from tblassignjobcandidate, always use COUNT(DISTINCT jobid).
+  The same job appears once per candidate assigned to it.
+
+3. Candidate names/profiles joined from tblassignjobcandidate:
+  When listing or grouping by candidate, GROUP BY candidateid or candidatename to collapse duplicates.
+  Do not SELECT all rows from tblassignjobcandidate and expect one row per candidate.
+
+4. Company counts from tblassignjobcandidate:
+  When counting companies, use COUNT(DISTINCT companyname) or COUNT(DISTINCT client_id).
+
+5. Funnel stage counts:
+  For each stage count (submitted, interview, offered, placed), count rows per stage:
+  SUM(CASE WHEN candidatestatusid = X THEN 1 ELSE 0 END) is correct — no DISTINCT needed here
+  because each row IS one stage assignment.
+
+6. Joining tblcandidate to tblassignjobcandidate for candidate analytics:
+  After the JOIN, GROUP BY tblcandidate.id to ensure one row per candidate.
+  Never SELECT tblcandidate.* from a JOIN without GROUP BY — it multiplies rows.
+
+7. Joining tbljob to tblassignjobcandidate for job analytics:
+  After the JOIN, GROUP BY tbljob.id to ensure one row per job.
+
+8. COUNT(*) is only safe when:
+  - The query is purely on tblcandidate with no JOIN (one row per candidate)
+  - The query is purely on tbljob with no JOIN (one row per job)
+  - The query is on tbldeals with no JOIN (one row per deal)
+  - The intent is explicitly to count assignment events, not unique entities
+
+9. Recruiter/owner counts:
+  When counting how many recruiters did something, use COUNT(DISTINCT ownerid).
+
+RULE: Before writing any COUNT, ask: "Could the same entity appear more than once in these results?"
+If yes, use COUNT(DISTINCT <id_column>).`.trim();
+
 
 export const FROZEN_FILTER_RULES = `
 MANDATORY SAFETY FILTERS:
@@ -116,6 +159,7 @@ tbljob:
   - job_category is the correct column name, NOT 'category'
   - ownerid exists and is correct
   - deleted = 0 is the correct filter (NOT archived)
+  - "Unknown column 'job.source'" -> tbljob has no source column. Use sourceid (int) joined to the source lookup table if available, or use tblassignjobcandidate.companyname as a grouping dimension instead. Never guess jobsource.
 
 tblassignjobcandidate:
   - NO 'placementdate' column -> use joiningdate for placement/joining date
@@ -340,6 +384,7 @@ export function buildFrozenSystemPrefix(): string {
   return [
     FROZEN_IDENTITY,
     FROZEN_SQL_RULES,
+    FROZEN_DISTINCT_RULES,
     FROZEN_COLUMN_CORRECTIONS,
     FROZEN_FK_LABEL_RULES,
     FROZEN_WINDOW_FUNCTION_RULES,

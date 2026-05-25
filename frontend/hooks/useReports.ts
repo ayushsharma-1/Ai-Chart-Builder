@@ -5,6 +5,17 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import api from '@/lib/api';
 import { Report, ReportRefreshResult, SavedChart } from '@/types';
 
+const ACCOUNT_ID_STORAGE_KEY = 'lens_account_id';
+
+function readStoredAccountId(): string | null {
+  if (globalThis.window === undefined) {
+    return null;
+  }
+
+  const stored = globalThis.window.localStorage.getItem(ACCOUNT_ID_STORAGE_KEY);
+  return stored && /^\d+$/.test(stored) ? stored : null;
+}
+
 export function useReports() {
   const [reports, setReports] = useState<Report[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -126,7 +137,13 @@ export function useReport(reportId?: string, options: { mode?: 'view' | 'edit'; 
 
   const refresh = useCallback(async (options: { persistSnapshots?: boolean } = {}) => {
     if (!reportId) return null;
-    const { data } = await api.post(`/api/reports/${reportId}/refresh`, { persistSnapshots: options.persistSnapshots });
+    const accountId = readStoredAccountId();
+    if (!accountId) return null;
+
+    const { data } = await api.post(`/api/reports/${reportId}/refresh`, {
+      persistSnapshots: options.persistSnapshots,
+      accountId,
+    });
     setReport(data.report);
     return data as { success: boolean; report: Report; results: ReportRefreshResult[] };
   }, [reportId]);

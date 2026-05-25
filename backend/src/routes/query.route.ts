@@ -6,6 +6,7 @@ const router = Router();
 
 const QuerySchema = z.object({
   prompt: z.string().trim().min(3).max(500),
+  accountId: z.string().regex(/^\d+$/, 'accountId must be a numeric string').min(1),
   sessionId: z.string().optional(),
   previousContext: z.object({
     previousPrompt: z.string().optional(),
@@ -21,6 +22,7 @@ router.post('/', async (req: Request, res: Response) => {
 
     const result = await runAnalyticsPipeline({
       userPrompt: body.prompt,
+      accountId: body.accountId,
       sessionId: body.sessionId,
       previousContext: body.previousContext,
     });
@@ -60,11 +62,11 @@ router.post('/', async (req: Request, res: Response) => {
       });
     }
 
-    return res.status(500).json({
+    return res.status(isValidationError ? 400 : 500).json({
       success: false,
       type: 'error',
       message: isValidationError
-        ? 'Invalid request payload. Please send a prompt string.'
+        ? 'Invalid request payload. Please send a prompt string and accountId.'
         : 'Something went wrong. Please try again.',
     });
   }
