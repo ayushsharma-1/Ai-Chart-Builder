@@ -7,10 +7,11 @@ interface Props {
 const PROMPTS = [
   'Show candidates by status this month',
   'Top jobs by number of applicants',
-  'Hiring pipeline stage breakdown',
-  'Deal value won vs lost this quarter',
+  'Show recruiter-wise monthly placement growth and revenue trends',
+  'Show recruiter workload by active jobs',
   'Candidates added per week last 3 months',
   'Jobs by department',
+  'Show candidate count by current status.',
 ];
 
 export default function SuggestedPrompts({ onSelect }: Props) {

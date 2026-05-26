@@ -493,7 +493,7 @@ export async function analyzeIntent(
           { role: 'user', content: userMessage },
         ],
         temperature: 0.1,
-        max_tokens: 250,
+        max_tokens: 400,
         response_format: { type: 'json_object' },
       }),
       new Promise<never>((_, reject) =>

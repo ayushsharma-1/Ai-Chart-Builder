@@ -355,7 +355,7 @@ export function buildFrozenIntentPrefix(): string {
   return [
     FROZEN_IDENTITY,
     `Your only job is to analyze user intent and identify which database tables are needed.
-Do not generate SQL. Only return a structured analysis of what the user is asking.`,
+    Do not generate SQL. Only return a structured analysis of what the user is asking.`,
     FROZEN_INTENT_OUTPUT_FORMAT,
   ].join('\n\n');
 }
