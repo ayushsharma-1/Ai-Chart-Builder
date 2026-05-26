@@ -1,7 +1,6 @@
 'use client';
 
-import { useMemo, useRef } from 'react';
-import { GitBranch } from 'lucide-react';
+import { useMemo } from 'react';
 
 import ChartRenderer from '@/components/chart/ChartRenderer';
 import Navbar from '@/components/ui/Navbar';
@@ -20,87 +19,56 @@ import StepTable from '@/src/components/queryBuilder/StepTable';
 import PreviewPane from '@/src/components/queryBuilder/PreviewPane';
 
 function looksLikeDateValue(value: unknown) {
-  if (typeof value === 'number') {
-    return value > 946684800;
-  }
-
-  if (typeof value === 'string') {
-    return /\d{4}-\d{2}|\d{4}\/\d{2}|\d{4}-\d{2}-\d{2}/.test(value);
-  }
-
+  if (typeof value === 'number') return value > 946684800;
+  if (typeof value === 'string') return /\d{4}-\d{2}|\d{4}\/\d{2}|\d{4}-\d{2}-\d{2}/.test(value);
   return false;
 }
 
-function inferChartType(rowData: Record<string, unknown>[], xAxis: string, seriesKeys: string[]) : ChartType {
-  if (rowData.length === 0) {
-    return 'table';
-  }
-
-  const sampleValues = rowData.slice(0, 10).map((row) => row[xAxis]);
-
-  if (sampleValues.some((value) => looksLikeDateValue(value) || (typeof xAxis === 'string' && isDateLikeColumn(xAxis)))) {
-    return 'line';
-  }
-
-  if (seriesKeys.length > 1) {
-    return 'bar';
-  }
-
-  if (rowData.length <= 8) {
-    return 'pie';
-  }
-
-  if (rowData.length > 30) {
-    return 'table';
-  }
-
+function inferChartType(rows: Record<string, unknown>[], xAxis: string, seriesKeys: string[]): ChartType {
+  if (rows.length === 0) return 'table';
+  const sample = rows.slice(0, 10).map((r) => r[xAxis]);
+  if (sample.some((v) => looksLikeDateValue(v) || isDateLikeColumn(xAxis))) return 'line';
+  if (seriesKeys.length > 1) return 'bar';
+  if (rows.length <= 8) return 'pie';
+  if (rows.length > 30) return 'table';
   return 'bar';
 }
 
 export default function QueryBuilderPage() {
   const { accountId } = useAccountId();
   const {
-    plan,
-    step,
-    setStep,
-    previewData,
-    previewSql,
-    previewRowCount,
-    previewExecutionTimeMs,
-    previewLoading,
-    previewError,
-    finalResult,
-    finalLoading,
-    finalError,
-    setPlan,
-    runPreview,
-    runFinal,
+    plan, step, setStep,
+    previewData, previewSql, previewRowCount, previewExecutionTimeMs,
+    previewLoading, previewError,
+    finalResult, finalLoading, finalError,
+    setPlan, runPreview, runFinal,
   } = useQueryBuilder();
-  const resultsRef = useRef<HTMLDivElement | null>(null);
 
-  const chartType = finalResult ? inferChartType(finalResult.data, finalResult.chartConfig.xAxis, finalResult.chartConfig.seriesKeys) : 'table';
+  const chartType = finalResult
+    ? inferChartType(finalResult.data, finalResult.chartConfig.xAxis, finalResult.chartConfig.seriesKeys)
+    : 'table';
 
-  const currentStepComponent = useMemo(() => {
-    const sharedProps = {
-      plan,
-      onChange: setPlan,
-      schema: SCHEMA_TABLES,
-    };
+  const sharedProps = useMemo(
+    () => ({ plan, onChange: setPlan, schema: SCHEMA_TABLES }),
+    [plan, setPlan],
+  );
 
+  const stepComponent = useMemo(() => {
     if (step === 6) {
-      return finalResult ? (
-        <section ref={resultsRef} id="query-builder-results" className="space-y-4 rounded-3xl border border-[#1E1E2E] bg-[#0E0E15] p-6 shadow-xl shadow-black/20">
-          <div className="flex flex-wrap items-center justify-between gap-3">
+      if (!finalResult) return null;
+      return (
+        <div className="rounded-xl border border-white/5 bg-[#0E0E15]">
+          <div className="flex items-center justify-between border-b border-white/5 px-5 py-4">
             <div>
-              <p className="text-xs uppercase tracking-[0.18em] text-[#7B7B9A]">Results</p>
-              <h2 className="mt-1 font-syne text-2xl font-bold text-[#F0F0FF]">Compiled query visualization</h2>
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-[#7B7B9A]">Results</p>
+              <h2 className="mt-1 text-lg font-semibold text-[#F0F0FF]">Query results</h2>
             </div>
-            <div className="text-sm text-[#7B7B9A]">
-              {finalResult.rowCount} rows · {finalResult.executionTimeMs}ms
+            <div className="flex items-center gap-3 text-xs text-[#7B7B9A]">
+              <span className="rounded-md bg-[#22D3A3]/10 px-2 py-1 text-[#34D399]">{finalResult.rowCount} rows</span>
+              <span>{finalResult.executionTimeMs}ms</span>
             </div>
           </div>
-
-          <div className="overflow-hidden rounded-2xl border border-[#1E1E2E] bg-[#111118] p-4">
+          <div className="p-5">
             <ChartRenderer
               type={chartType}
               data={finalResult.data}
@@ -109,125 +77,110 @@ export default function QueryBuilderPage() {
               seriesKeys={finalResult.chartConfig.seriesKeys}
             />
           </div>
-        </section>
-      ) : null;
+        </div>
+      );
     }
 
     switch (step) {
-      case 0:
-        return <StepTable {...sharedProps} />;
-      case 1:
-        return <StepColumns {...sharedProps} />;
-      case 2:
-        return <StepJoins {...sharedProps} />;
-      case 3:
-        return <StepFilters {...sharedProps} />;
-      case 4:
-        return <StepGroupSort {...sharedProps} />;
-      case 5:
+      case 0: return <StepTable {...sharedProps} />;
+      case 1: return <StepColumns {...sharedProps} />;
+      case 2: return <StepJoins {...sharedProps} />;
+      case 3: return <StepFilters {...sharedProps} />;
+      case 4: return <StepGroupSort {...sharedProps} />;
       default:
         return (
           <StepLimit
             {...sharedProps}
             onRunFinal={async () => {
               const result = await runFinal();
-              if (result) {
-                setStep(6);
-              }
+              if (result) setStep(6);
             }}
             canRun={Boolean(plan.table && plan.columns.length > 0)}
             isRunning={finalLoading}
           />
         );
     }
-  }, [chartType, finalLoading, finalResult, plan, runFinal, setPlan, step]);
-
-  const handleResultsClick = () => {
-    setStep(6);
-  };
-
-  const canRun = Boolean(plan.table && plan.columns.length > 0 && !finalLoading);
+  }, [chartType, finalLoading, finalResult, plan, runFinal, setStep, sharedProps, step]);
 
   return (
-    <div className="h-screen flex flex-col bg-[#0A0A0F] text-[#F0F0FF]">
+    <div className="flex h-screen flex-col bg-[#090910] text-[#F0F0FF]">
       <Navbar />
-      <div className="flex-1 overflow-y-auto">
-        <div className="mx-auto grid min-h-full max-w-[1800px] gap-8 px-8 py-8 lg:grid-cols-[minmax(0,2fr)_minmax(360px,1fr)]">
-          <div className="space-y-8">
-            <div className="rounded-3xl border border-[#1E1E2E] bg-[#0E0E15] p-6 shadow-xl shadow-black/20 pb-4 border-b mb-4">
-              <div className="flex flex-wrap items-start gap-8">
-                <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-[#6366F1] to-[#22D3A3] shadow-lg shadow-indigo-500/20">
-                  <GitBranch size={20} className="text-white" />
-                </div>
-                <div className="min-w-0 flex-1 mt-1">
-                  <p className="text-xs uppercase tracking-[0.18em] text-[#7B7B9A]">Query Builder</p>
-                  <h1 className="mt-2 font-syne text-3xl font-bold text-[#F0F0FF]">Visual query composition</h1>
-                  <p className="mt-3 max-w-3xl text-sm leading-relaxed text-[#7B7B9A]">
-                    Build a query step by step without writing SQL. Every change runs a live preview, and SQL is compiled only at execution time.
-                  </p>
-                </div>
-              </div>
-            </div>
 
+      <div className="flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-[1600px] px-5 py-5">
+
+          {/* Step indicator */}
+          <div className="mb-4">
             <StepIndicator
               currentStep={step}
               resultsEnabled={Boolean(plan.table && plan.columns.length > 0)}
               resultsActive={step === 6}
               onStepChange={setStep}
-              onResultsClick={handleResultsClick}
+              onResultsClick={() => setStep(6)}
             />
-
-            {currentStepComponent}
-
-            {finalError && (
-              <div className="rounded-2xl border border-[#F87171]/30 bg-[#2A1216] p-4 text-sm text-[#FCA5A5]">
-                {finalError}
-              </div>
-            )}
-
-            <div className="mt-8 flex items-center justify-between gap-4 border-t border-[#1E1E2E] bg-[#0E0E15] px-6 py-4 shadow-xl shadow-black/20">
-              <button
-                type="button"
-                onClick={() => setStep((current) => Math.max(0, current - 1))}
-                disabled={step === 0}
-                className="rounded-xl border border-[#1E1E2E] bg-[#111118] px-4 py-2 text-sm text-[#F0F0FF] transition-colors hover:border-[#6366F1]/40 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                Back
-              </button>
-
-              {step < 5 ? (
-                <button
-                  type="button"
-                  onClick={() => setStep((current) => Math.min(5, current + 1))}
-                  className="rounded-xl bg-[#6366F1] px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[#5558E8]"
-                >
-                  Next
-                </button>
-              ) : step === 5 ? <span className="text-sm text-[#7B7B9A]">Use the button in the Limit step to run the final query.</span> : (
-                <button
-                  type="button"
-                  onClick={() => setStep(5)}
-                  className="rounded-xl bg-[#6366F1] px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[#5558E8]"
-                >
-                  Back to builder
-                </button>
-              )}
-            </div>
           </div>
 
-          <div className="lg:sticky lg:top-8 lg:self-start">
-            <PreviewPane
-              hasTable={Boolean(plan.table)}
-              previewData={previewData}
-              previewLoading={previewLoading}
-              previewError={previewError}
-              rowCount={previewRowCount}
-              executionTimeMs={previewExecutionTimeMs}
-              sql={previewSql}
-              onRetry={() => {
-                void runPreview();
-              }}
-            />
+          {/* Main layout */}
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
+
+            {/* Left: builder */}
+            <div className="space-y-4">
+              {stepComponent}
+
+              {finalError && (
+                <div className="rounded-lg border border-[#F87171]/15 bg-[#F87171]/5 px-4 py-3 text-sm text-[#F87171]">
+                  {finalError}
+                </div>
+              )}
+
+              {/* Nav buttons */}
+              <div className="flex items-center justify-between rounded-xl border border-white/5 bg-[#0E0E15] px-4 py-3">
+                <button
+                  type="button"
+                  onClick={() => setStep((s) => Math.max(0, s - 1))}
+                  disabled={step === 0}
+                  className="rounded-lg border border-white/8 px-4 py-1.5 text-sm text-[#7B7B9A] transition-colors hover:text-[#F0F0FF] hover:border-white/15 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Back
+                </button>
+
+                {step < 5 && (
+                  <button
+                    type="button"
+                    onClick={() => setStep((s) => Math.min(5, s + 1))}
+                    className="rounded-lg bg-[#6366F1] px-5 py-1.5 text-sm font-medium text-white transition-colors hover:bg-[#5558E8]"
+                  >
+                    Next
+                  </button>
+                )}
+                {step === 5 && (
+                  <span className="text-xs text-[#44445E]">Click Run &amp; Visualize above</span>
+                )}
+                {step === 6 && (
+                  <button
+                    type="button"
+                    onClick={() => setStep(5)}
+                    className="rounded-lg bg-[#6366F1] px-5 py-1.5 text-sm font-medium text-white transition-colors hover:bg-[#5558E8]"
+                  >
+                    ← Back to builder
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Right: preview */}
+            <div className="lg:sticky lg:top-5 lg:self-start" style={{ maxHeight: 'calc(100vh - 6rem)', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+              <PreviewPane
+                hasTable={Boolean(plan.table)}
+                previewData={previewData}
+                previewLoading={previewLoading}
+                previewError={previewError}
+                rowCount={previewRowCount}
+                executionTimeMs={previewExecutionTimeMs}
+                sql={previewSql}
+                onRetry={() => void runPreview()}
+              />
+            </div>
           </div>
         </div>
       </div>

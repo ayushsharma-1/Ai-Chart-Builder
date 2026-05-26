@@ -445,7 +445,7 @@ function auditDistinctUsage(sql: string): void {
   const selectNodes = collectSelectNodes(ast);
 
   for (const selectNode of selectNodes) {
-    const hasDuplicateProneCount = (selectNode?.columns || []).some((column) => isDuplicateProneCount(column?.expr));
+    const hasDuplicateProneCount = (selectNode?.columns || []).some((column: unknown) => isDuplicateProneCount((column as { expr?: unknown })?.expr));
 
     if (hasDuplicateProneCount) {
       console.warn('[SQLAgent] Potential duplicate count — COUNT without DISTINCT on tblassignjobcandidate');

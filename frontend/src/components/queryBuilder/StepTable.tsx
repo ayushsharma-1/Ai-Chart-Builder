@@ -1,6 +1,6 @@
 'use client';
 
-import { Database } from 'lucide-react';
+import { Users, Briefcase, TrendingUp, Building2, Check } from 'lucide-react';
 
 import { QueryPlan } from '@/src/types/queryBuilder';
 import { SchemaTableDefinition } from '@/src/lib/dataModel';
@@ -12,73 +12,79 @@ interface Props {
 }
 
 function createBasePlan(tableName: string): QueryPlan {
-  return {
-    table: tableName,
-    joins: [],
-    columns: [],
-    filters: [],
-    groupBy: [],
-    orderBy: [],
-    limit: 1000,
-  };
+  return { table: tableName, joins: [], columns: [], filters: [], groupBy: [], orderBy: [], limit: 1000 };
 }
+
+const TABLE_META: Record<string, { icon: React.ReactNode; label: string; color: string }> = {
+  tblcandidate:          { icon: <Users size={16} />,      label: 'Candidates', color: '#6366F1' },
+  tblassignjobcandidate: { icon: <Briefcase size={16} />,  label: 'Pipeline',   color: '#22D3A3' },
+  tbldeals:              { icon: <TrendingUp size={16} />,  label: 'Deals',      color: '#F59E0B' },
+  tbljob:                { icon: <Building2 size={16} />,   label: 'Jobs',       color: '#60A5FA' },
+};
 
 export default function StepTable({ plan, onChange, schema }: Readonly<Props>) {
   return (
-    <section className="space-y-5 rounded-3xl border border-[#1E1E2E] bg-[#0E0E15] px-6 py-4 shadow-xl shadow-black/20">
-      <div>
-        <p className="text-xs uppercase tracking-[0.18em] text-[#7B7B9A]">Step 1</p>
-        <h2 className="mt-2 font-syne text-2xl font-bold text-[#F0F0FF]">Choose a base table</h2>
-        <p className="mt-3 max-w-3xl text-sm leading-relaxed text-[#7B7B9A]">Start with the table that best matches the question. Everything else is built from this selection.</p>
+    <div className="rounded-xl border border-white/5 bg-[#0E0E15]">
+      {/* Header */}
+      <div className="border-b border-white/5 px-5 py-4">
+        <p className="text-[10px] font-semibold uppercase tracking-widest text-[#6366F1]">Step 1</p>
+        <h2 className="mt-1 text-lg font-semibold text-[#F0F0FF]">Choose a source table</h2>
+        <p className="mt-1 text-sm text-[#7B7B9A]">Pick the main table for your query. You can join others in step 3.</p>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2">
+      {/* Table grid */}
+      <div className="grid gap-3 p-5 md:grid-cols-2">
         {schema.map((table) => {
+          const meta = TABLE_META[table.name];
           const isSelected = plan.table === table.name;
+          const color = meta?.color ?? '#6366F1';
 
           return (
             <button
               key={table.name}
               type="button"
               onClick={() => onChange(createBasePlan(table.name))}
-              className={`group rounded-2xl border p-5 text-left transition-all duration-300 hover:-translate-y-1 hover:shadow-xl ${
-                isSelected
-                  ? 'border-[#6366F1] bg-gradient-to-br from-[#6366F1]/20 to-[#6366F1]/5 shadow-[0_8px_30px_rgba(99,102,241,0.2)]'
-                  : 'border-[#1E1E2E] bg-[#111118] hover:border-[#6366F1]/50 hover:shadow-[#6366F1]/10'
-              }`}
+              className={`group relative rounded-xl border p-4 text-left transition-all duration-150
+                ${isSelected
+                  ? 'border-[#6366F1]/30 bg-[#6366F1]/8'
+                  : 'border-white/5 bg-[#111118] hover:border-white/10 hover:bg-[#13131E]'
+                }`}
             >
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <div className="flex items-center gap-3">
-                    <Database size={15} className={isSelected ? 'text-[#A5B4FC]' : 'text-[#7B7B9A]'} />
-                    <h3 className="font-medium text-[#F0F0FF]">{table.name}</h3>
-                  </div>
-                  <p className="mt-3 text-sm leading-relaxed text-[#7B7B9A]">{table.purpose}</p>
-                </div>
-                <span className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${isSelected ? 'bg-[#6366F1]/20 text-[#C7D2FE]' : 'bg-[#171722] text-[#7B7B9A]'}`}>
-                  {table.columns.length} columns
-                </span>
-              </div>
-
-              <div className="mt-5 flex flex-wrap gap-2.5">
-                {table.keywords.slice(0, 4).map((keyword) => (
-                  <span key={keyword} className="rounded-full border border-[#1E1E2E] bg-[#0A0A0F] px-2.5 py-1 text-[11px] text-[#7B7B9A]">
-                    {keyword}
-                  </span>
-                ))}
-              </div>
-
+              {/* Selected check */}
               {isSelected && (
-                <div className="mt-6 flex justify-center">
-                  <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-4 py-1.5 text-xs font-semibold uppercase tracking-wider text-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.1)]">
-                    Currently Selected
-                  </span>
+                <div className="absolute right-3 top-3 flex h-5 w-5 items-center justify-center rounded-full bg-[#6366F1]">
+                  <Check size={11} strokeWidth={2.5} className="text-white" />
                 </div>
               )}
+
+              {/* Icon */}
+              <div
+                className="mb-3 flex h-9 w-9 items-center justify-center rounded-lg"
+                style={{ background: `${color}18`, color }}
+              >
+                {meta?.icon}
+              </div>
+
+              {/* Name */}
+              <div className="mb-1 flex items-baseline gap-2">
+                <span className="text-sm font-semibold text-[#F0F0FF]">{meta?.label ?? table.name}</span>
+                <span className="font-mono text-[10px] text-[#44445E]">{table.name}</span>
+              </div>
+
+              <p className="mb-3 text-xs leading-relaxed text-[#7B7B9A]">{table.purpose}</p>
+
+              <div className="flex items-center justify-between">
+                <div className="flex flex-wrap gap-1">
+                  {table.keywords.slice(0, 3).map((kw) => (
+                    <span key={kw} className="rounded bg-white/4 px-1.5 py-0.5 text-[10px] text-[#44445E]">{kw}</span>
+                  ))}
+                </div>
+                <span className="text-[10px] text-[#44445E]">{table.columns.length} cols</span>
+              </div>
             </button>
           );
         })}
       </div>
-    </section>
+    </div>
   );
 }

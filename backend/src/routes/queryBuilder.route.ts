@@ -20,6 +20,8 @@ const QueryPlanSchema = z.object({
     table: z.string(),
     leftCol: z.string(),
     rightCol: z.string(),
+    joinType: z.enum(['INNER', 'LEFT', 'RIGHT', 'FULL']).default('INNER'),
+    custom: z.boolean().optional(),
   })).default([]),
   columns: z.array(z.object({
     table: z.string(),
@@ -39,7 +41,8 @@ const QueryPlanSchema = z.object({
     direction: z.enum(['ASC', 'DESC']),
   })).default([]),
   limit: z.number().int().positive().default(1000),
-}) satisfies z.ZodType<QueryPlan>;
+// satisfies omitted: .default() fields make input types optional which conflicts with QueryPlan's required fields
+}) as z.ZodType<QueryPlan, z.ZodTypeDef, unknown>;
 
 const QueryBuilderRequestSchema = z.object({
   plan: QueryPlanSchema,

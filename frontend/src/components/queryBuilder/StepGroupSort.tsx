@@ -1,7 +1,7 @@
 'use client';
 
-import { ArrowDown, ArrowUp, GripVertical, Plus, Trash2 } from 'lucide-react';
 import { useState } from 'react';
+import { GripVertical, Plus, X, ArrowUp, ArrowDown } from 'lucide-react';
 
 import { QueryPlan, OrderByStep } from '@/src/types/queryBuilder';
 import { SchemaTableDefinition } from '@/src/lib/dataModel';
@@ -12,40 +12,9 @@ interface Props {
   schema: readonly SchemaTableDefinition[];
 }
 
-function selectedColumnKey(tableName: string, columnName: string) {
-  return `${tableName}.${columnName}`;
-}
-
-function selectedColumnLabel(tableName: string, columnName: string, alias: string) {
-  return alias || `${tableName}_${columnName}`;
-}
-
-function formatColumnName(columnName: string) {
-  const withoutTablePrefix = columnName.startsWith('tbl') && columnName.includes('_') ? columnName.slice(columnName.indexOf('_') + 1) : columnName;
-
-  return withoutTablePrefix
-    .split('_')
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
-    .join(' ');
-}
-
-function updateGroupBy(plan: QueryPlan, key: string, checked: boolean) {
-  const nextGroupBy = checked
-    ? Array.from(new Set([...plan.groupBy, key]))
-    : plan.groupBy.filter((entry) => entry !== key);
-
-  return {
-    ...plan,
-    groupBy: nextGroupBy,
-  };
-}
-
-function updateOrderBy(plan: QueryPlan, nextOrderBy: OrderByStep[]) {
-  return {
-    ...plan,
-    orderBy: nextOrderBy,
-  };
+function prettyAlias(alias: string): string {
+  const clean = alias.startsWith('tbl') && alias.includes('_') ? alias.slice(alias.indexOf('_') + 1) : alias;
+  return clean.split('_').filter(Boolean).map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
 }
 
 export default function StepGroupSort({ plan, onChange }: Readonly<Props>) {
@@ -53,140 +22,143 @@ export default function StepGroupSort({ plan, onChange }: Readonly<Props>) {
 
   if (!plan.table) {
     return (
-      <section className="rounded-3xl border border-[#1E1E2E] bg-[#0E0E15] px-6 py-4 shadow-xl shadow-black/20">
+      <div className="rounded-xl border border-white/5 bg-[#0E0E15] px-5 py-4">
         <p className="text-sm text-[#7B7B9A]">Choose a base table first.</p>
-      </section>
+      </div>
     );
   }
 
-  const selectableColumns = plan.columns.filter((column) => column.aggregate === 'none');
-  const availableSortColumns = selectableColumns.filter((column) => !plan.orderBy.some((order) => order.alias === (column.alias || `${column.table}_${column.column}`)));
+  const groupableCols = plan.columns.filter((c) => c.aggregate === 'none');
+  const sortedSet = new Set(plan.orderBy.map((o) => o.alias));
+  const sortableCols = groupableCols.filter((c) => !sortedSet.has(c.alias || `${c.table}_${c.column}`));
 
-  const reorderSort = (fromIndex: number, toIndex: number) => {
-    if (fromIndex === toIndex) {
-      return;
-    }
+  function toggleGroupBy(key: string, checked: boolean) {
+    onChange({ ...plan, groupBy: checked ? [...new Set([...plan.groupBy, key])] : plan.groupBy.filter((k) => k !== key) });
+  }
 
-    const nextOrderBy = [...plan.orderBy];
-    const [moved] = nextOrderBy.splice(fromIndex, 1);
-    nextOrderBy.splice(toIndex, 0, moved);
-    onChange(updateOrderBy(plan, nextOrderBy));
-  };
+  function addSort(alias: string) {
+    onChange({ ...plan, orderBy: [...plan.orderBy, { alias, direction: 'ASC' }] });
+  }
+
+  function toggleDir(index: number) {
+    onChange({ ...plan, orderBy: plan.orderBy.map((o, i) => i === index ? { ...o, direction: o.direction === 'ASC' ? 'DESC' : 'ASC' } : o) });
+  }
+
+  function removeSort(index: number) {
+    onChange({ ...plan, orderBy: plan.orderBy.filter((_, i) => i !== index) });
+  }
+
+  function reorder(from: number, to: number) {
+    if (from === to) return;
+    const next = [...plan.orderBy];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    onChange({ ...plan, orderBy: next });
+  }
 
   return (
-    <section className="space-y-6 rounded-3xl border border-[#1E1E2E] bg-[#0E0E15] px-6 py-4 shadow-xl shadow-black/20">
-      <div className="mb-8">
-        <p className="mb-1 text-xs font-semibold uppercase tracking-widest text-[#6366F1]">STEP 5</p>
-        <h2 className="text-2xl font-bold text-[#F0F0FF]">Group and sort</h2>
-        <p className="mt-2 text-sm leading-relaxed text-[#7B7B9A]">Group by raw selected columns, then arrange the output order with drag-and-drop sorting.</p>
+    <div className="rounded-xl border border-white/5 bg-[#0E0E15]">
+      {/* Header */}
+      <div className="border-b border-white/5 px-5 py-4">
+        <p className="text-[10px] font-semibold uppercase tracking-widest text-[#6366F1]">Step 5</p>
+        <h2 className="mt-1 text-lg font-semibold text-[#F0F0FF]">Group &amp; sort</h2>
+        <p className="mt-1 text-sm text-[#7B7B9A]">Group rows by fields and control the sort order of results.</p>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <div>
-          <h3 className="text-sm font-medium text-[#F0F0FF]">Group by</h3>
-          <div className="my-6 border-t border-white/10" />
-          <div className="mt-3 space-y-2">
-            {selectableColumns.length > 0 &&
-              selectableColumns.map((column) => {
-                const key = selectedColumnKey(column.table, column.column);
+      <div className="grid gap-0 divide-x divide-white/5 md:grid-cols-2">
+        {/* GROUP BY */}
+        <div className="p-5">
+          <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-[#7B7B9A]">Group by</p>
+          {groupableCols.length === 0 ? (
+            <p className="text-sm text-[#44445E]">Select non-aggregate columns first.</p>
+          ) : (
+            <div className="space-y-1">
+              {groupableCols.map((col) => {
+                const key = `${col.table}.${col.column}`;
                 const checked = plan.groupBy.includes(key);
-
+                const label = col.alias || `${col.table}_${col.column}`;
                 return (
-                  <label key={key} className="mb-2 flex items-center gap-3 rounded-lg border border-white/5 bg-[#16161F] p-3 text-sm text-[#D6D6EA]">
+                  <label key={key} className="flex cursor-pointer items-center gap-3 rounded-md px-2.5 py-2 transition-colors hover:bg-white/3">
                     <input
                       type="checkbox"
                       checked={checked}
-                      onChange={(event) => onChange(updateGroupBy(plan, key, event.target.checked))}
-                      className="h-4 w-4 rounded border-[#3F3F5C] bg-[#111118] text-[#6366F1] focus:ring-[#6366F1]"
+                      onChange={(e) => toggleGroupBy(key, e.target.checked)}
+                      className="h-4 w-4 shrink-0 rounded accent-[#6366F1]"
                     />
-                    <span className="min-w-0 flex-1 truncate">{formatColumnName(selectedColumnLabel(column.table, column.column, column.alias))}</span>
+                    <span className="text-sm text-[#D6D6EA]">{prettyAlias(label)}</span>
                   </label>
                 );
-              })
-            }
-          </div>
+              })}
+            </div>
+          )}
         </div>
 
-        <div className="mt-6 lg:mt-0">
-          <h3 className="text-sm font-medium text-[#F0F0FF]">Sort order</h3>
-          <div className="my-6 border-t border-white/10" />
-          <div className="flex items-center justify-between gap-2">
-            <span className="rounded-full bg-[#171722] px-2.5 py-1 text-[11px] text-[#7B7B9A]">Drag to reorder</span>
-          </div>
+        {/* ORDER BY */}
+        <div className="p-5">
+          <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-[#7B7B9A]">Sort order</p>
 
-          <div className="mt-3 space-y-2">
-            {plan.orderBy.length > 0 &&
-              plan.orderBy.map((sortItem, index) => (
-                <div
-                  key={`${sortItem.alias}-${index}`}
-                  draggable
-                  onDragStart={() => setDragIndex(index)}
-                  onDragOver={(event) => event.preventDefault()}
-                  onDrop={() => {
-                    if (dragIndex === null) {
-                      return;
-                    }
-
-                    reorderSort(dragIndex, index);
-                    setDragIndex(null);
-                  }}
-                  className="mb-2 flex items-center gap-3 rounded-lg border border-white/5 bg-[#16161F] p-3"
-                >
-                  <GripVertical size={14} className="text-[#7B7B9A]" />
-                  <span className="min-w-0 flex-1 truncate text-sm text-[#D6D6EA]">{formatColumnName(sortItem.alias)}</span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const nextDirection = sortItem.direction === 'ASC' ? 'DESC' : 'ASC';
-                      onChange(updateOrderBy(plan, plan.orderBy.map((item, itemIndex) => (itemIndex === index ? { ...item, direction: nextDirection } : item))));
-                    }}
-                    className="inline-flex h-8 items-center gap-1 rounded-lg border border-[#1E1E2E] bg-[#111118] px-2.5 text-xs text-[#F0F0FF] transition-colors hover:border-[#6366F1]/40"
-                  >
-                    {sortItem.direction === 'ASC' ? <ArrowUp size={12} /> : <ArrowDown size={12} />}
-                    {sortItem.direction}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onChange(updateOrderBy(plan, plan.orderBy.filter((_, itemIndex) => itemIndex !== index)))}
-                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[#1E1E2E] bg-[#111118] text-[#F87171] transition-colors hover:border-[#F87171]/40 hover:bg-[#2A1216]"
-                    aria-label="Remove sort"
-                  >
-                    <Trash2 size={14} />
-                  </button>
+          {plan.orderBy.length === 0 && sortableCols.length === 0 ? (
+            <p className="text-sm text-[#44445E]">Select columns first.</p>
+          ) : (
+            <div className="space-y-3">
+              {/* Current sorts */}
+              {plan.orderBy.length > 0 && (
+                <div className="space-y-1.5">
+                  {plan.orderBy.map((item, index) => (
+                    <div
+                      key={`${item.alias}-${index}`}
+                      draggable
+                      onDragStart={() => setDragIndex(index)}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={() => { if (dragIndex !== null) { reorder(dragIndex, index); setDragIndex(null); } }}
+                      className="flex items-center gap-2.5 rounded-md border border-white/5 bg-[#111118] px-3 py-2.5"
+                    >
+                      <GripVertical size={14} className="shrink-0 cursor-grab text-[#3F3F5C]" />
+                      <span className="flex-1 min-w-0 truncate text-sm text-[#D6D6EA]">{prettyAlias(item.alias)}</span>
+                      <button
+                        type="button"
+                        onClick={() => toggleDir(index)}
+                        className="flex items-center gap-1 rounded border border-white/8 px-2 py-1 text-xs font-medium text-[#7B7B9A] transition-colors hover:text-[#F0F0FF]"
+                      >
+                        {item.direction === 'ASC' ? <ArrowUp size={11} /> : <ArrowDown size={11} />}
+                        {item.direction}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => removeSort(index)}
+                        className="shrink-0 text-[#3F3F5C] transition-colors hover:text-[#F87171]"
+                        aria-label="Remove sort"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                  ))}
                 </div>
-              ))
-            }
-          </div>
+              )}
 
-          <div className="mt-4 flex flex-wrap gap-2">
-            {availableSortColumns.map((column) => {
-              const alias = column.alias || `${column.table}_${column.column}`;
-
-              return (
-                <button
-                  key={alias}
-                  type="button"
-                  onClick={() => {
-                    onChange(
-                      updateOrderBy(plan, [
-                        ...plan.orderBy,
-                        {
-                          alias,
-                          direction: 'ASC',
-                        },
-                      ]),
+              {/* Add sort */}
+              {sortableCols.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {sortableCols.map((col) => {
+                    const alias = col.alias || `${col.table}_${col.column}`;
+                    return (
+                      <button
+                        key={alias}
+                        type="button"
+                        onClick={() => addSort(alias)}
+                        className="flex items-center gap-1.5 rounded-md border border-white/8 px-3 py-1.5 text-sm text-[#7B7B9A] transition-colors hover:text-[#F0F0FF] hover:border-white/15"
+                      >
+                        <Plus size={12} />
+                        {prettyAlias(alias)}
+                      </button>
                     );
-                  }}
-                  className="inline-flex items-center gap-2 rounded-full border border-[#1E1E2E] bg-[#0A0A0F] px-3 py-1.5 text-xs text-[#7B7B9A] transition-colors hover:border-[#6366F1]/40 hover:text-[#F0F0FF]"
-                >
-                  <Plus size={12} />
-                  {formatColumnName(alias)}
-                </button>
-              );
-            })}
-          </div>
+                  })}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
-    </section>
+    </div>
   );
 }

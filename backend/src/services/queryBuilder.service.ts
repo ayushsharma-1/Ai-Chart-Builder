@@ -2,10 +2,14 @@ import { SCHEMA_TABLES } from '../utils/dataModel';
 
 export type AggregateFunction = 'none' | 'COUNT' | 'SUM' | 'AVG' | 'MAX' | 'MIN';
 
+export type JoinType = 'INNER' | 'LEFT' | 'RIGHT' | 'FULL';
+
 export interface JoinStep {
   table: string;
   leftCol: string;
   rightCol: string;
+  joinType?: JoinType;
+  custom?: boolean;
 }
 
 export interface ColumnStep {
@@ -260,9 +264,12 @@ function buildJoinClause(baseTable: string, joinStep: JoinStep) {
     throw new Error(`Unknown join column ${joinStep.table}.${joinStep.rightCol}`);
   }
 
-  resolveJoinRelation(baseTable, joinStep);
+  if (!joinStep.custom) {
+    resolveJoinRelation(baseTable, joinStep);
+  }
 
-  return `INNER JOIN ${quoteIdentifier(joinStep.table)} ON ${formatColumnReference(baseTable, joinStep.leftCol)} = ${formatColumnReference(joinStep.table, joinStep.rightCol)}`;
+  const joinType = joinStep.joinType ?? 'INNER';
+  return `${joinType} JOIN ${quoteIdentifier(joinStep.table)} ON ${formatColumnReference(baseTable, joinStep.leftCol)} = ${formatColumnReference(joinStep.table, joinStep.rightCol)}`;
 }
 
 function buildFilterExpression(filter: FilterStep) {

@@ -2,13 +2,6 @@ import { getRelevantSchemaContext } from './dataModel';
 import { getRelevantSemanticMetricPrompt } from './semanticMetrics';
 import * as promptTokens from './promptTokens';
 
-export {
-  FROZEN_IDENTITY as BASE_SYSTEM_PROMPT,
-  FROZEN_SQL_RULES as CORE_SQL_RULES,
-  FROZEN_CHART_RULES as CHART_RULES,
-  FROZEN_OUTPUT_FORMAT as OUTPUT_FORMAT_RULES,
-} from './promptTokens';
-
 export interface LLMRuntimeContext {
   previousPrompt?: string;
   previousTitle?: string;

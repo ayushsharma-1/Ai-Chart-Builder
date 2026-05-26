@@ -56,6 +56,7 @@ export interface AIMetricsEntry {
     category?: string;
     mode?: 'validation' | 'execution';
   };
+  accountId?: string | number;
   latencyMs: number;
   tokens: {
     promptTokens: number;

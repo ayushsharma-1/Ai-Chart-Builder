@@ -1,5 +1,7 @@
 export type AggregateFunction = 'none' | 'COUNT' | 'SUM' | 'AVG' | 'MAX' | 'MIN';
 
+export type JoinType = 'INNER' | 'LEFT' | 'RIGHT' | 'FULL';
+
 export interface QueryPlan {
   table: string | null;
   joins: JoinStep[];
@@ -14,6 +16,8 @@ export interface JoinStep {
   table: string;
   leftCol: string;
   rightCol: string;
+  joinType: JoinType;
+  custom?: boolean;
 }
 
 export interface ColumnStep {
