@@ -4,6 +4,10 @@ export type AggregateFunction = 'none' | 'COUNT' | 'SUM' | 'AVG' | 'MAX' | 'MIN'
 
 export type JoinType = 'INNER' | 'LEFT' | 'RIGHT' | 'FULL';
 
+export type ScalarValue = string | number | boolean;
+
+export type FilterValue = ScalarValue | Array<ScalarValue>;
+
 export interface JoinStep {
   table: string;
   leftCol: string;
@@ -19,11 +23,24 @@ export interface ColumnStep {
   aggregate: AggregateFunction;
 }
 
+export type ComputedColumnType = 'concat' | 'coalesce' | 'date_format' | 'cast';
+
+export interface ComputedColumn {
+  type: ComputedColumnType;
+  inputs: string[];
+  aggregate?: AggregateFunction;
+  separator?: string;
+  format?: string;
+  castType?: string;
+  sourceVisibility?: 'both' | 'computed_only';
+  alias: string;
+}
+
 export interface FilterStep {
   table: string;
   column: string;
   operator: '=' | '!=' | '>' | '<' | '>=' | '<=' | 'LIKE' | 'IN';
-  value: string | number | boolean | Array<string | number | boolean>;
+  value: FilterValue;
 }
 
 export interface OrderByStep {
@@ -35,6 +52,7 @@ export interface QueryPlan {
   table: string | null;
   joins: JoinStep[];
   columns: ColumnStep[];
+  computed?: ComputedColumn[];
   filters: FilterStep[];
   groupBy: string[];
   orderBy: OrderByStep[];
@@ -44,7 +62,7 @@ export interface QueryPlan {
 export interface DerivedFilterStep {
   column: string;
   operator: '=' | '!=' | '>' | '<' | '>=' | '<=' | 'LIKE' | 'IN';
-  value: string | number | boolean | Array<string | number | boolean>;
+  value: FilterValue;
 }
 
 export interface DerivedOrderStep {
@@ -99,7 +117,7 @@ function isKnownColumn(tableName: string, columnName: string) {
 }
 
 function parseRelation(relation: string): ParsedRelation | null {
-  const match = relation.match(/^([^.]+)\.([^\s]+)\s*->\s*([^.]+)\.([^\s]+)$/);
+  const match = /^([^.]+)\.([^\s]+)\s*->\s*([^.]+)\.([^\s]+)$/.exec(relation);
 
   if (!match) {
     return null;
@@ -114,7 +132,7 @@ function parseRelation(relation: string): ParsedRelation | null {
 }
 
 function relationKey(a: string, b: string) {
-  return [normalizeName(a), normalizeName(b)].sort().join('|');
+  return [normalizeName(a), normalizeName(b)].sort((left, right) => left.localeCompare(right)).join('|');
 }
 
 function buildRelationLookup() {
@@ -144,7 +162,7 @@ function isDateLikeColumn(columnName: string) {
   return /(date|time|on|created|updated|from|to|month|year|day)$/i.test(columnName) || /(posting|joining|stage)/i.test(columnName);
 }
 
-function isNumericValue(value: string | number | boolean | Array<string | number | boolean>) {
+function isNumericValue(value: FilterValue) {
   if (typeof value === 'number') {
     return Number.isFinite(value);
   }
@@ -160,7 +178,7 @@ function isNumericValue(value: string | number | boolean | Array<string | number
   return false;
 }
 
-function normalizeFilterValue(value: string | number | boolean): string | number | boolean {
+function normalizeFilterValue(value: ScalarValue): ScalarValue {
   if (typeof value === 'number' || typeof value === 'boolean') {
     return value;
   }
@@ -185,7 +203,7 @@ function normalizeFilterValue(value: string | number | boolean): string | number
   return trimmed;
 }
 
-function formatLiteral(value: string | number | boolean, columnName: string) {
+function formatLiteral(value: ScalarValue, columnName: string) {
   const normalized = normalizeFilterValue(value);
 
   if (typeof normalized === 'boolean') {
@@ -211,6 +229,31 @@ function formatColumnReference(tableName: string, columnName: string) {
   return `${quoteIdentifier(tableName)}.${quoteIdentifier(columnName)}`;
 }
 
+function parseQualifiedColumnReference(reference: string) {
+  const parts = reference.split('.');
+
+  if (parts.length !== 2 || parts.some((part) => part.trim().length === 0)) {
+    throw new Error(`Invalid computed column input reference: ${reference}`);
+  }
+
+  const [tableName, columnName] = parts;
+
+  if (!isKnownTable(tableName)) {
+    throw new Error(`Unknown table in computed column input: ${tableName}`);
+  }
+
+  if (!isKnownColumn(tableName, columnName)) {
+    throw new Error(`Unknown computed column input ${tableName}.${columnName}`);
+  }
+
+  return { tableName, columnName };
+}
+
+function formatQualifiedColumnReference(reference: string) {
+  const { tableName, columnName } = parseQualifiedColumnReference(reference);
+  return formatColumnReference(tableName, columnName);
+}
+
 function defaultColumnAlias(tableName: string, columnName: string) {
   return `${normalizeName(tableName)}_${normalizeName(columnName)}`;
 }
@@ -221,6 +264,44 @@ function defaultAggregateAlias(step: ColumnStep) {
   }
 
   return `${normalizeName(step.aggregate)}_${normalizeName(step.table)}_${normalizeName(step.column)}`;
+}
+
+function buildComputedExpression(step: ComputedColumn) {
+  if (!step.alias || step.alias.trim().length === 0) {
+    throw new Error('Computed column alias is required.');
+  }
+
+  const inputs = Array.isArray(step.inputs) ? step.inputs.filter((input) => input.trim().length > 0) : [];
+
+  if (inputs.length === 0) {
+    throw new Error(`Computed column "${step.alias}" requires at least one input.`);
+  }
+
+  const inputRefs = inputs.map(formatQualifiedColumnReference);
+
+  switch (step.type) {
+    case 'concat': {
+      if (step.separator && step.separator.length > 0) {
+        const separator = `'${escapeSqlString(step.separator)}'`;
+        const parts = inputRefs.flatMap((inputRef, index) => index === inputRefs.length - 1 ? [inputRef] : [inputRef, separator]);
+        return `CONCAT(${parts.join(', ')})`;
+      }
+
+      return `CONCAT(${inputRefs.join(', ')})`;
+    }
+    case 'coalesce':
+      return `COALESCE(${inputRefs.join(', ')})`;
+    case 'date_format': {
+      const format = step.format && step.format.trim().length > 0 ? step.format.trim() : '%Y-%m';
+      return `DATE_FORMAT(FROM_UNIXTIME(${inputRefs[0]}), '${escapeSqlString(format)}')`;
+    }
+    case 'cast': {
+      const castType = step.castType && step.castType.trim().length > 0 ? step.castType.trim() : 'DECIMAL(15,2)';
+      return `CAST(${inputRefs[0]} AS ${castType})`;
+    }
+    default:
+      throw new Error(`Unsupported computed column type: ${step.type}`);
+  }
 }
 
 function resolveJoinRelation(baseTable: string, joinStep: JoinStep) {
@@ -266,6 +347,37 @@ function buildSelectExpression(step: ColumnStep) {
   }
 
   return `${step.aggregate}(${columnReference}) AS ${quoteIdentifier(step.alias || defaultAggregateAlias(step))}`;
+}
+
+function buildComputedSelectExpression(step: ComputedColumn) {
+  const expression = buildComputedExpression(step);
+  const aggregate = step.aggregate ?? 'none';
+
+  if (aggregate === 'none') {
+    return `${expression} AS ${quoteIdentifier(step.alias.trim())}`;
+  }
+
+  if (aggregate === 'COUNT') {
+    return `COUNT(${expression}) AS ${quoteIdentifier(step.alias.trim())}`;
+  }
+
+  return `${aggregate}(${expression}) AS ${quoteIdentifier(step.alias.trim())}`;
+}
+
+function getHiddenComputedInputs(plan: QueryPlan) {
+  const hiddenInputs = new Set<string>();
+
+  for (const computed of plan.computed ?? []) {
+    if (computed.type !== 'concat' || (computed.sourceVisibility ?? 'both') !== 'computed_only') {
+      continue;
+    }
+
+    for (const input of computed.inputs) {
+      hiddenInputs.add(input);
+    }
+  }
+
+  return hiddenInputs;
 }
 
 function buildJoinClause(baseTable: string, joinStep: JoinStep) {
@@ -337,18 +449,25 @@ function buildFilterExpression(filter: FilterStep) {
 
 function buildGroupByExpressions(plan: QueryPlan) {
   const explicitGroupBy = plan.groupBy.filter(Boolean).map((value) => value.trim());
+  const hiddenInputs = getHiddenComputedInputs(plan);
 
   const rawSelectedColumns = plan.columns
     .filter((column) => column.aggregate === 'none')
+    .filter((column) => !hiddenInputs.has(`${column.table}.${column.column}`))
     .map((column) => formatColumnReference(column.table, column.column));
+
+  const computedExpressions = (plan.computed ?? [])
+    .filter((computed) => (computed.aggregate ?? 'none') === 'none')
+    .map(buildComputedExpression);
+  const groupedSelections = [...rawSelectedColumns, ...computedExpressions];
 
   const hasAggregates = plan.columns.some((column) => column.aggregate !== 'none');
 
   if (!hasAggregates) {
-    return explicitGroupBy.length > 0 ? explicitGroupBy : rawSelectedColumns;
+    return explicitGroupBy.length > 0 ? explicitGroupBy : groupedSelections;
   }
 
-  const combined = [...explicitGroupBy, ...rawSelectedColumns];
+  const combined = [...explicitGroupBy, ...groupedSelections];
   const uniqueGroupBy: string[] = [];
   const seen = new Set<string>();
 
@@ -388,7 +507,13 @@ export function compileQueryPlan(plan: QueryPlan): string {
     throw new Error('At least one column must be selected.');
   }
 
-  const selectExpressions = plan.columns.map(buildSelectExpression);
+  const hiddenInputs = getHiddenComputedInputs(plan);
+  const selectExpressions = [
+    ...(plan.computed ?? []).map(buildComputedSelectExpression),
+    ...plan.columns
+      .filter((column) => !(column.aggregate === 'none' && hiddenInputs.has(`${column.table}.${column.column}`)))
+      .map(buildSelectExpression),
+  ];
   const joinClauses = plan.joins.map((joinStep) => buildJoinClause(plan.table as string, joinStep));
   const filterExpressions = plan.filters.map(buildFilterExpression);
   const groupByExpressions = buildGroupByExpressions(plan);
@@ -422,9 +547,17 @@ function formatDerivedLiteral(value: unknown): string {
   if (value === null || value === undefined) return 'NULL';
   if (typeof value === 'boolean') return value ? '1' : '0';
   if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'NULL';
-  const str = String(value).trim();
-  if (/^-?\d+(?:\.\d+)?$/.test(str)) return str;
-  return `'${escapeSqlString(str)}'`;
+  if (typeof value === 'string') {
+    const str = value.trim();
+    if (/^-?\d+(?:\.\d+)?$/.test(str)) return str;
+    return `'${escapeSqlString(str)}'`;
+  }
+
+  if (typeof value === 'object') {
+    return `'${escapeSqlString(JSON.stringify(value))}'`;
+  }
+
+  throw new Error('Unsupported derived literal value.');
 }
 
 export function compileDerivedQuery(parentSql: string, transform: TransformPlan): string {
@@ -451,7 +584,8 @@ export function compileDerivedQuery(parentSql: string, transform: TransformPlan)
 
   const activeOrder = transform.orderBy.filter((o) => o.column.trim().length > 0);
   if (activeOrder.length > 0) {
-    parts.push(`ORDER BY ${activeOrder.map((o) => `${quoteIdentifier(o.column)} ${o.direction}`).join(', ')}`);
+    const orderByClause = activeOrder.map((item) => `${quoteIdentifier(item.column)} ${item.direction}`).join(', ');
+    parts.push(`ORDER BY ${orderByClause}`);
   }
 
   parts.push(`LIMIT ${limit}`);

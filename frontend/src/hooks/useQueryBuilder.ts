@@ -13,6 +13,7 @@ function createInitialPlan(): QueryPlan {
     table: null,
     joins: [],
     columns: [],
+    computed: [],
     filters: [],
     groupBy: [],
     orderBy: [],
@@ -29,6 +30,7 @@ function clonePlan(plan: QueryPlan): QueryPlan {
     table: plan.table,
     joins: plan.joins.map((join) => ({ ...join })),
     columns: plan.columns.map((column) => ({ ...column })),
+    computed: plan.computed?.map((computed) => ({ ...computed, inputs: [...computed.inputs] })) ?? [],
     filters: plan.filters.map((filter) => ({
       ...filter,
       value: Array.isArray(filter.value) ? [...filter.value] : filter.value,
@@ -41,7 +43,7 @@ function clonePlan(plan: QueryPlan): QueryPlan {
 
 export function useQueryBuilder() {
   const { accountId } = useAccountId();
-  const [plan, setPlanState] = useState<QueryPlan>(() => createInitialPlan());
+  const [plan, setPlan] = useState<QueryPlan>(() => createInitialPlan());
   const [step, setStep] = useState(0);
   const [previewData, setPreviewData] = useState<Record<string, unknown>[]>([]);
   const [previewSql, setPreviewSql] = useState('');
@@ -64,9 +66,9 @@ export function useQueryBuilder() {
   const finalRequestId = useRef(0);
   const derivedRequestId = useRef(0);
 
-  const setPlan = useCallback((updater: QueryPlan | ((current: QueryPlan) => QueryPlan)) => {
-    setPlanState((current) => {
-      const nextPlan = typeof updater === 'function' ? (updater as (value: QueryPlan) => QueryPlan)(current) : updater;
+  const updatePlan = useCallback((updater: QueryPlan | ((current: QueryPlan) => QueryPlan)) => {
+    setPlan((current) => {
+      const nextPlan = typeof updater === 'function' ? updater(current) : updater;
 
       if (JSON.stringify(current) === JSON.stringify(nextPlan)) {
         return current;
@@ -87,8 +89,13 @@ export function useQueryBuilder() {
         return history;
       }
 
-      const previousPlan = history[history.length - 1];
-      setPlanState(previousPlan);
+      const previousPlan = history.at(-1);
+
+      if (!previousPlan) {
+        return history;
+      }
+
+      setPlan(previousPlan);
       setFinalResult(null);
       setFinalError(null);
       setDerivedResult(null);
@@ -252,7 +259,7 @@ export function useQueryBuilder() {
     derivedResult,
     derivedLoading,
     derivedError,
-    setPlan,
+    setPlan: updatePlan,
     undo,
     runPreview,
     runFinal,

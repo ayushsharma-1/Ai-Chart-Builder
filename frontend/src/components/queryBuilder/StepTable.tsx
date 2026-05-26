@@ -12,7 +12,7 @@ interface Props {
 }
 
 function createBasePlan(tableName: string): QueryPlan {
-  return { table: tableName, joins: [], columns: [], filters: [], groupBy: [], orderBy: [], limit: 1000 };
+  return { table: tableName, joins: [], columns: [], computed: [], filters: [], groupBy: [], orderBy: [], limit: 1000 };
 }
 
 const TABLE_META: Record<string, { icon: React.ReactNode; label: string; color: string }> = {

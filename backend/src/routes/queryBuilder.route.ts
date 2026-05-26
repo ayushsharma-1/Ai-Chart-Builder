@@ -29,6 +29,16 @@ const QueryPlanSchema = z.object({
     alias: z.string().optional(),
     aggregate: z.enum(['none', 'COUNT', 'SUM', 'AVG', 'MAX', 'MIN']),
   })).default([]),
+  computed: z.array(z.object({
+    type: z.enum(['concat', 'coalesce', 'date_format', 'cast']),
+    inputs: z.array(z.string().min(1)).default([]),
+    aggregate: z.enum(['none', 'COUNT', 'SUM', 'AVG', 'MAX', 'MIN']).default('none'),
+    separator: z.string().optional(),
+    format: z.string().optional(),
+    castType: z.string().optional(),
+    sourceVisibility: z.enum(['both', 'computed_only']).optional(),
+    alias: z.string().min(1),
+  })).default([]),
   filters: z.array(z.object({
     table: z.string(),
     column: z.string(),
@@ -86,10 +96,26 @@ function isDateLikeKey(key: string) {
   return /(date|time|on|created|updated|month|year|day)$/i.test(key);
 }
 
+function getSelectedAlias(column: QueryPlan['columns'][number]) {
+  if (column.alias) {
+    return column.alias;
+  }
+
+  if (column.aggregate === 'none') {
+    return `${column.table}_${column.column}`;
+  }
+
+  if (column.aggregate === 'COUNT') {
+    return `count_${column.table}`;
+  }
+
+  return `${column.aggregate.toLowerCase()}_${column.table}_${column.column}`;
+}
+
 function inferChartConfig(plan: QueryPlan, rows: ResultRow[]) {
   const firstRow = rows[0] || {};
   const rowKeys = Object.keys(firstRow);
-  const selectedAliases = plan.columns.map((column) => column.alias || (column.aggregate === 'none' ? `${column.table}_${column.column}` : column.aggregate === 'COUNT' ? `count_${column.table}` : `${column.aggregate.toLowerCase()}_${column.table}_${column.column}`));
+  const selectedAliases = plan.columns.map((column) => getSelectedAlias(column));
   const groupByAliases = plan.groupBy.map((groupBy) => groupBy.includes('.') ? groupBy.replace('.', '_') : groupBy);
 
   const xAxis = groupByAliases[0]
@@ -103,7 +129,7 @@ function inferChartConfig(plan: QueryPlan, rows: ResultRow[]) {
   const yAxis = metricAliases[0] || numericKeys[0] || selectedAliases.find((alias) => alias !== xAxis) || rowKeys[1] || xAxis;
 
   return {
-    xAxis: isDateLikeKey(xAxis) ? xAxis : xAxis,
+    xAxis,
     yAxis,
     seriesKeys,
   };

@@ -2,10 +2,13 @@ export type AggregateFunction = 'none' | 'COUNT' | 'SUM' | 'AVG' | 'MAX' | 'MIN'
 
 export type JoinType = 'INNER' | 'LEFT' | 'RIGHT' | 'FULL';
 
+export type ComputedColumnType = 'concat' | 'coalesce' | 'date_format' | 'cast';
+
 export interface QueryPlan {
   table: string | null;
   joins: JoinStep[];
   columns: ColumnStep[];
+  computed?: ComputedColumn[];
   filters: FilterStep[];
   groupBy: string[];
   orderBy: OrderByStep[];
@@ -25,6 +28,17 @@ export interface ColumnStep {
   column: string;
   alias: string;
   aggregate: AggregateFunction;
+}
+
+export interface ComputedColumn {
+  type: ComputedColumnType;
+  inputs: string[];
+  aggregate?: AggregateFunction;
+  separator?: string;
+  format?: string;
+  castType?: string;
+  sourceVisibility?: 'both' | 'computed_only';
+  alias: string;
 }
 
 export interface FilterStep {
