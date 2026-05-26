@@ -1,6 +1,6 @@
 'use client';
 
-import { Edit2, FileText, LayoutDashboard, MessageSquare, Shield, Sparkles } from 'lucide-react';
+import { Edit2, FileText, GitBranch, LayoutDashboard, MessageSquare, Shield, Sparkles } from 'lucide-react';
 import Link from 'next/link';
 import { useState } from 'react';
 import { usePathname } from 'next/navigation';
@@ -15,7 +15,7 @@ export default function Navbar() {
   const [isEditingAccountId, setIsEditingAccountId] = useState(false);
 
   return (
-    <nav className="h-14 border-b border-[#1E1E2E] flex items-center px-6 gap-6 bg-[#0A0A0F] flex-shrink-0">
+    <nav className="sticky top-0 z-50 h-14 border-b border-white/5 bg-[#0A0A0F]/70 backdrop-blur-md flex items-center px-6 gap-6 flex-shrink-0">
       <div className="flex items-center gap-2 mr-4">
         <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-[#6366F1] to-[#A78BFA] flex items-center justify-center">
           <Sparkles size={14} className="text-white" />
@@ -50,11 +50,20 @@ export default function Navbar() {
         <LayoutDashboard size={14} /> Charts
       </Link>
 
+      <Link
+        href="/query-builder"
+        className={`flex items-center gap-2 text-sm px-3 py-1.5 rounded-lg transition-all ${
+          path === '/query-builder' ? 'bg-[#6366F1]/10 text-[#6366F1]' : 'text-[#7B7B9A] hover:text-[#F0F0FF]'
+        }`}
+      >
+        <GitBranch size={14} /> Query Builder
+      </Link>
+
       <div className="ml-auto flex items-center">
         <button
           type="button"
           onClick={() => setIsEditingAccountId(true)}
-          className="flex items-center gap-2 rounded-full border border-[#1E1E2E] bg-[#111118] px-3 py-1.5 text-xs text-[#F0F0FF] transition-colors hover:border-[#6366F1]/40 hover:bg-[#151522]"
+          className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-[#F0F0FF] transition-all hover:bg-white/10 hover:shadow-[0_0_10px_rgba(255,255,255,0.05)]"
         >
           <Shield size={12} className="text-[#22D3A3]" />
           {accountId ? (
