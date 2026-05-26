@@ -41,6 +41,23 @@ export interface QueryPlan {
   limit: number;
 }
 
+export interface DerivedFilterStep {
+  column: string;
+  operator: '=' | '!=' | '>' | '<' | '>=' | '<=' | 'LIKE' | 'IN';
+  value: string | number | boolean | Array<string | number | boolean>;
+}
+
+export interface DerivedOrderStep {
+  column: string;
+  direction: 'ASC' | 'DESC';
+}
+
+export interface TransformPlan {
+  filters: DerivedFilterStep[];
+  orderBy: DerivedOrderStep[];
+  limit: number;
+}
+
 interface ParsedRelation {
   leftTable: string;
   leftColumn: string;
@@ -399,4 +416,44 @@ export function compileQueryPlan(plan: QueryPlan): string {
   queryParts.push(`LIMIT ${limit}`);
 
   return queryParts.join(' ');
+}
+
+function formatDerivedLiteral(value: unknown): string {
+  if (value === null || value === undefined) return 'NULL';
+  if (typeof value === 'boolean') return value ? '1' : '0';
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'NULL';
+  const str = String(value).trim();
+  if (/^-?\d+(?:\.\d+)?$/.test(str)) return str;
+  return `'${escapeSqlString(str)}'`;
+}
+
+export function compileDerivedQuery(parentSql: string, transform: TransformPlan): string {
+  const limit = Math.max(1, Math.min(5000, Math.floor(transform.limit || 1000)));
+  const parts: string[] = [`SELECT * FROM (\n  ${parentSql}\n) AS \`q\``];
+
+  const activeFilters = transform.filters.filter((f) => f.column.trim().length > 0);
+  if (activeFilters.length > 0) {
+    const conditions = activeFilters.map((f) => {
+      const col = quoteIdentifier(f.column);
+      if (f.operator === 'IN') {
+        const vals = Array.isArray(f.value)
+          ? f.value
+          : String(f.value).split(',').map((s) => s.trim()).filter(Boolean);
+        if (vals.length === 0) {
+          throw new Error(`IN filter for column "${f.column}" has no values.`);
+        }
+        return `${col} IN (${vals.map((v) => formatDerivedLiteral(v)).join(', ')})`;
+      }
+      return `${col} ${f.operator} ${formatDerivedLiteral(f.value)}`;
+    });
+    parts.push(`WHERE ${conditions.join(' AND ')}`);
+  }
+
+  const activeOrder = transform.orderBy.filter((o) => o.column.trim().length > 0);
+  if (activeOrder.length > 0) {
+    parts.push(`ORDER BY ${activeOrder.map((o) => `${quoteIdentifier(o.column)} ${o.direction}`).join(', ')}`);
+  }
+
+  parts.push(`LIMIT ${limit}`);
+  return parts.join('\n');
 }

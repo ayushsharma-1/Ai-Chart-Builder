@@ -3,7 +3,7 @@ import { z } from 'zod';
 
 import { injectAccountIdFilter, validateSql } from '../utils/sqlGuard';
 import { runQuery } from '../services/sql.service';
-import { compileQueryPlan, QueryPlan } from '../services/queryBuilder.service';
+import { compileDerivedQuery, compileQueryPlan, QueryPlan, TransformPlan } from '../services/queryBuilder.service';
 
 type ResultRow = Record<string, unknown>;
 
@@ -167,6 +167,78 @@ router.post('/execute', async (req: Request, res: Response) => {
   } catch (error: any) {
     const message = error?.issues?.[0]?.message || error?.message || 'Unable to execute query.';
     const status = error?.issues || /accountId/i.test(message) || /table/i.test(message) || /column/i.test(message) || /validation/i.test(message) ? 400 : 500;
+    return res.status(status).json({ success: false, message });
+  }
+});
+
+const DerivedFilterSchema = z.object({
+  column: z.string().min(1),
+  operator: z.enum(['=', '!=', '>', '<', '>=', '<=', 'LIKE', 'IN']),
+  value: FilterValueSchema,
+});
+
+const TransformPlanSchema = z.object({
+  filters: z.array(DerivedFilterSchema).default([]),
+  orderBy: z.array(z.object({
+    column: z.string().min(1),
+    direction: z.enum(['ASC', 'DESC']),
+  })).default([]),
+  limit: z.number().int().positive().max(5000).default(1000),
+}) as z.ZodType<TransformPlan, z.ZodTypeDef, unknown>;
+
+const DerivedQueryRequestSchema = z.object({
+  parentSql: z.string().min(10),
+  transform: TransformPlanSchema,
+  accountId: z.coerce.number().int().positive(),
+});
+
+router.post('/derived', async (req: Request, res: Response) => {
+  try {
+    const payload = DerivedQueryRequestSchema.parse(req.body);
+
+    const parentValidation = validateSql(payload.parentSql);
+    if (!parentValidation.safe) {
+      throw new Error(parentValidation.reason || 'Parent SQL failed validation.');
+    }
+
+    const derivedSql = compileDerivedQuery(payload.parentSql, payload.transform);
+    const derivedValidation = validateSql(derivedSql);
+    if (!derivedValidation.safe || !derivedValidation.sanitizedSql) {
+      throw new Error(derivedValidation.reason || 'Derived SQL failed validation.');
+    }
+
+    const result = await runQuery(derivedValidation.sanitizedSql, [], {
+      accountId: String(payload.accountId),
+      originalSql: derivedSql,
+      correctedSql: derivedValidation.sanitizedSql,
+      retryCount: 0,
+      userPrompt: 'query-builder-derived',
+    });
+
+    const rows = result.data as ResultRow[];
+    const firstRow = rows[0] ?? {};
+    const keys = Object.keys(firstRow);
+    const numericKeys = keys.filter((k) => {
+      const v = firstRow[k];
+      return typeof v === 'number' || (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v)));
+    });
+    const xAxis = keys.find((k) => !numericKeys.includes(k)) ?? keys[0] ?? 'x';
+    const yAxis = numericKeys[0] ?? keys[1] ?? xAxis;
+
+    return res.json({
+      data: rows,
+      rowCount: result.rowCount,
+      sql: derivedValidation.sanitizedSql,
+      executionTimeMs: result.executionTimeMs,
+      chartConfig: {
+        xAxis,
+        yAxis,
+        seriesKeys: numericKeys.filter((k) => k !== yAxis && k !== xAxis),
+      },
+    });
+  } catch (error: any) {
+    const message = error?.issues?.[0]?.message || error?.message || 'Unable to execute derived query.';
+    const status = error?.issues || /sql|column|filter/i.test(message) ? 400 : 500;
     return res.status(status).json({ success: false, message });
   }
 });

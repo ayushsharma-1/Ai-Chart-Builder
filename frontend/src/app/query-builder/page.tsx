@@ -16,6 +16,7 @@ import StepIndicator from '@/src/components/queryBuilder/StepIndicator';
 import StepJoins from '@/src/components/queryBuilder/StepJoins';
 import StepLimit from '@/src/components/queryBuilder/StepLimit';
 import StepTable from '@/src/components/queryBuilder/StepTable';
+import StepTransform from '@/src/components/queryBuilder/StepTransform';
 import PreviewPane from '@/src/components/queryBuilder/PreviewPane';
 
 function looksLikeDateValue(value: unknown) {
@@ -41,7 +42,9 @@ export default function QueryBuilderPage() {
     previewData, previewSql, previewRowCount, previewExecutionTimeMs,
     previewLoading, previewError,
     finalResult, finalLoading, finalError,
-    setPlan, runPreview, runFinal,
+    transformPlan, setTransformPlan,
+    derivedResult, derivedLoading, derivedError,
+    setPlan, runPreview, runFinal, runDerived,
   } = useQueryBuilder();
 
   const chartType = finalResult
@@ -54,6 +57,23 @@ export default function QueryBuilderPage() {
   );
 
   const stepComponent = useMemo(() => {
+    // ── Step 7: Transform (derived query) ──────────────────────────────────
+    if (step === 7) {
+      if (!finalResult) return null;
+      return (
+        <StepTransform
+          baseResult={finalResult}
+          transform={transformPlan}
+          onChange={setTransformPlan}
+          onRun={() => void runDerived(finalResult.sql)}
+          isRunning={derivedLoading}
+          error={derivedError}
+          derivedResult={derivedResult}
+        />
+      );
+    }
+
+    // ── Step 6: Results ────────────────────────────────────────────────────
     if (step === 6) {
       if (!finalResult) return null;
       return (
@@ -77,10 +97,22 @@ export default function QueryBuilderPage() {
               seriesKeys={finalResult.chartConfig.seriesKeys}
             />
           </div>
+          {/* Transform CTA */}
+          <div className="flex items-center justify-between border-t border-white/5 px-5 py-3">
+            <p className="text-sm text-[#7B7B9A]">Want to filter or sort these results further?</p>
+            <button
+              type="button"
+              onClick={() => setStep(7)}
+              className="flex items-center gap-1.5 rounded-lg border border-white/8 px-4 py-2 text-xs text-[#7B7B9A] transition-colors hover:border-[#22D3A3]/30 hover:text-[#22D3A3]"
+            >
+              Transform →
+            </button>
+          </div>
         </div>
       );
     }
 
+    // ── Steps 0–5: Builder ─────────────────────────────────────────────────
     switch (step) {
       case 0: return <StepTable {...sharedProps} />;
       case 1: return <StepColumns {...sharedProps} />;
@@ -100,7 +132,32 @@ export default function QueryBuilderPage() {
           />
         );
     }
-  }, [chartType, finalLoading, finalResult, plan, runFinal, setStep, sharedProps, step]);
+  }, [
+    chartType, derivedError, derivedLoading, derivedResult, finalLoading,
+    finalResult, plan, runDerived, runFinal, setStep, setTransformPlan,
+    sharedProps, step, transformPlan,
+  ]);
+
+  // Lineage breadcrumb shown at step 6+ when there's a result
+  const lineage = step >= 6 && plan.table && finalResult ? (
+    <div className="mb-2 flex items-center gap-2 overflow-x-auto text-xs">
+      <span className="whitespace-nowrap rounded-md border border-white/5 bg-[#111118] px-2.5 py-1 text-[#7B7B9A]">
+        {plan.table}
+      </span>
+      <span className="text-[#2A2A3E]">→</span>
+      <span className="whitespace-nowrap rounded-md border border-[#22D3A3]/15 bg-[#111118] px-2.5 py-1 text-[#22D3A3]">
+        {finalResult.rowCount} rows
+      </span>
+      {derivedResult && (
+        <>
+          <span className="text-[#2A2A3E]">→</span>
+          <span className="whitespace-nowrap rounded-md border border-[#818CF8]/20 bg-[#111118] px-2.5 py-1 text-[#818CF8]">
+            {derivedResult.rowCount} rows (transformed)
+          </span>
+        </>
+      )}
+    </div>
+  ) : null;
 
   return (
     <div className="flex h-screen flex-col bg-[#090910] text-[#F0F0FF]">
@@ -108,6 +165,9 @@ export default function QueryBuilderPage() {
 
       <div className="flex-1 overflow-y-auto">
         <div className="mx-auto max-w-[1600px] px-5 py-5">
+
+          {/* Lineage */}
+          {lineage}
 
           {/* Step indicator */}
           <div className="mb-4">
@@ -117,6 +177,9 @@ export default function QueryBuilderPage() {
               resultsActive={step === 6}
               onStepChange={setStep}
               onResultsClick={() => setStep(6)}
+              transformEnabled={Boolean(finalResult)}
+              transformActive={step === 7}
+              onTransformClick={() => setStep(7)}
             />
           </div>
 
@@ -139,7 +202,7 @@ export default function QueryBuilderPage() {
                   type="button"
                   onClick={() => setStep((s) => Math.max(0, s - 1))}
                   disabled={step === 0}
-                  className="rounded-lg border border-white/8 px-4 py-1.5 text-sm text-[#7B7B9A] transition-colors hover:text-[#F0F0FF] hover:border-white/15 disabled:cursor-not-allowed disabled:opacity-40"
+                  className="rounded-lg border border-white/8 px-4 py-1.5 text-sm text-[#7B7B9A] transition-colors hover:border-white/15 hover:text-[#F0F0FF] disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   Back
                 </button>
@@ -159,10 +222,19 @@ export default function QueryBuilderPage() {
                 {step === 6 && (
                   <button
                     type="button"
-                    onClick={() => setStep(5)}
+                    onClick={() => setStep(7)}
+                    className="rounded-lg bg-[#22D3A3]/10 border border-[#22D3A3]/20 px-5 py-1.5 text-sm font-medium text-[#22D3A3] transition-colors hover:bg-[#22D3A3]/20"
+                  >
+                    Transform →
+                  </button>
+                )}
+                {step === 7 && (
+                  <button
+                    type="button"
+                    onClick={() => setStep(6)}
                     className="rounded-lg bg-[#6366F1] px-5 py-1.5 text-sm font-medium text-white transition-colors hover:bg-[#5558E8]"
                   >
-                    ← Back to builder
+                    ← Results
                   </button>
                 )}
               </div>

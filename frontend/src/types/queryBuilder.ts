@@ -39,6 +39,27 @@ export interface OrderByStep {
   direction: 'ASC' | 'DESC';
 }
 
+// ─── Derived / Transform ────────────────────────────────────────────────────
+
+export interface DerivedFilterStep {
+  column: string;
+  operator: '=' | '!=' | '>' | '<' | '>=' | '<=' | 'LIKE' | 'IN';
+  value: string | number | boolean | Array<string | number | boolean>;
+}
+
+export interface DerivedOrderStep {
+  column: string;
+  direction: 'ASC' | 'DESC';
+}
+
+export interface TransformPlan {
+  filters: DerivedFilterStep[];
+  orderBy: DerivedOrderStep[];
+  limit: number;
+}
+
+// ─── Result types ────────────────────────────────────────────────────────────
+
 export interface QueryBuilderPreviewResult {
   data: Record<string, unknown>[];
   rowCount: number;

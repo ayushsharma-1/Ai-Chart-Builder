@@ -8,9 +8,15 @@ interface Props {
   resultsActive: boolean;
   onStepChange: (step: number) => void;
   onResultsClick: () => void;
+  transformEnabled: boolean;
+  transformActive: boolean;
+  onTransformClick: () => void;
 }
 
-export default function StepIndicator({ currentStep, resultsEnabled, resultsActive, onStepChange, onResultsClick }: Readonly<Props>) {
+export default function StepIndicator({
+  currentStep, resultsEnabled, resultsActive, onStepChange, onResultsClick,
+  transformEnabled, transformActive, onTransformClick,
+}: Readonly<Props>) {
   return (
     <div className="flex items-center gap-1 overflow-x-auto rounded-xl border border-white/5 bg-[#0E0E15] px-3 py-2">
       {STEPS.map((label, index) => {
@@ -67,6 +73,25 @@ export default function StepIndicator({ currentStep, resultsEnabled, resultsActi
       >
         <span className="shrink-0 text-[10px] font-semibold text-[#44445E]">7</span>
         <span>Results</span>
+      </button>
+
+      <span className="mx-1 text-[#2A2A3E]">/</span>
+
+      <button
+        type="button"
+        disabled={!transformEnabled}
+        onClick={onTransformClick}
+        className={`flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs whitespace-nowrap transition-all duration-150
+          ${transformActive
+            ? 'bg-[#22D3A3]/10 text-[#22D3A3] font-medium'
+            : transformEnabled
+              ? 'text-[#7B7B9A] hover:text-[#F0F0FF] cursor-pointer'
+              : 'text-[#3F3F5C] cursor-not-allowed'
+          }`}
+      >
+        <span className="shrink-0 text-[10px] font-semibold text-[#44445E]">8</span>
+        <span>Transform</span>
+        <span className="rounded-full bg-[#22D3A3]/10 px-1.5 text-[9px] font-semibold text-[#22D3A3]">opt</span>
       </button>
     </div>
   );

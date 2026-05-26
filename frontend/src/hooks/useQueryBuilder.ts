@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import api from '@/lib/api';
 import { useAccountId } from '@/hooks/useAccountId';
-import { QueryBuilderExecuteResult, QueryBuilderPreviewResult, QueryPlan } from '@/src/types/queryBuilder';
+import { QueryBuilderExecuteResult, QueryBuilderPreviewResult, QueryPlan, TransformPlan } from '@/src/types/queryBuilder';
 
 const MAX_UNDO_STATES = 20;
 
@@ -18,6 +18,10 @@ function createInitialPlan(): QueryPlan {
     orderBy: [],
     limit: 1000,
   };
+}
+
+function createInitialTransform(): TransformPlan {
+  return { filters: [], orderBy: [], limit: 1000 };
 }
 
 function clonePlan(plan: QueryPlan): QueryPlan {
@@ -49,8 +53,16 @@ export function useQueryBuilder() {
   const [finalLoading, setFinalLoading] = useState(false);
   const [finalError, setFinalError] = useState<string | null>(null);
   const [undoStack, setUndoStack] = useState<QueryPlan[]>([]);
+
+  // Derived / Transform state
+  const [transformPlan, setTransformPlan] = useState<TransformPlan>(() => createInitialTransform());
+  const [derivedResult, setDerivedResult] = useState<QueryBuilderExecuteResult | null>(null);
+  const [derivedLoading, setDerivedLoading] = useState(false);
+  const [derivedError, setDerivedError] = useState<string | null>(null);
+
   const previewRequestId = useRef(0);
   const finalRequestId = useRef(0);
+  const derivedRequestId = useRef(0);
 
   const setPlan = useCallback((updater: QueryPlan | ((current: QueryPlan) => QueryPlan)) => {
     setPlanState((current) => {
@@ -63,6 +75,8 @@ export function useQueryBuilder() {
       setUndoStack((history) => [...history.slice(-(MAX_UNDO_STATES - 1)), clonePlan(current)]);
       setFinalResult(null);
       setFinalError(null);
+      setDerivedResult(null);
+      setDerivedError(null);
       return nextPlan;
     });
   }, []);
@@ -77,6 +91,7 @@ export function useQueryBuilder() {
       setPlanState(previousPlan);
       setFinalResult(null);
       setFinalError(null);
+      setDerivedResult(null);
       return history.slice(0, -1);
     });
   }, []);
@@ -152,9 +167,9 @@ export function useQueryBuilder() {
         return data;
       }
 
-      const nextResult = data;
-      setFinalResult(nextResult);
-      return nextResult;
+      setFinalResult(data);
+      setDerivedResult(null);
+      return data;
     } catch (error: any) {
       if (finalRequestId.current === requestId) {
         setFinalError(error?.response?.data?.message || error?.message || 'Unable to execute query.');
@@ -167,6 +182,39 @@ export function useQueryBuilder() {
       }
     }
   }, [accountId, plan]);
+
+  const runDerived = useCallback(async (baseSql: string) => {
+    if (!accountId || !baseSql) {
+      setDerivedError('No base SQL available for transformation.');
+      return null;
+    }
+
+    const requestId = derivedRequestId.current + 1;
+    derivedRequestId.current = requestId;
+    setDerivedLoading(true);
+    setDerivedError(null);
+
+    try {
+      const { data } = await api.post<QueryBuilderExecuteResult>('/api/query-builder/derived', {
+        parentSql: baseSql,
+        transform: transformPlan,
+        accountId: Number(accountId),
+      });
+
+      if (derivedRequestId.current !== requestId) return data;
+      setDerivedResult(data);
+      return data;
+    } catch (error: any) {
+      if (derivedRequestId.current === requestId) {
+        setDerivedError(error?.response?.data?.message || error?.message || 'Unable to execute derived query.');
+      }
+      return null;
+    } finally {
+      if (derivedRequestId.current === requestId) {
+        setDerivedLoading(false);
+      }
+    }
+  }, [accountId, transformPlan]);
 
   useEffect(() => {
     if (!plan.table || !accountId) {
@@ -199,9 +247,15 @@ export function useQueryBuilder() {
     finalLoading,
     finalError,
     undoStack,
+    transformPlan,
+    setTransformPlan,
+    derivedResult,
+    derivedLoading,
+    derivedError,
     setPlan,
     undo,
     runPreview,
     runFinal,
+    runDerived,
   };
 }
