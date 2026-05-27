@@ -4,8 +4,8 @@ import { ArrowDown, ArrowUp, Play, Plus, X } from 'lucide-react';
 
 import ChartRenderer from '@/components/chart/ChartRenderer';
 import { ChartType } from '@/types';
-import { DerivedFilterStep, QueryBuilderExecuteResult, TransformPlan } from '@/src/types/queryBuilder';
-import { isDateLikeColumn } from '@/src/lib/dataModel';
+import { DerivedFilterStep, QueryBuilderExecuteResult, TransformPlan } from '@/types/queryBuilder';
+import { isDateLikeColumn } from '@/lib/dataModel';
 
 interface Props {
   baseResult: QueryBuilderExecuteResult;
@@ -76,17 +76,17 @@ export default function StepTransform({
   return (
     <div className="space-y-4">
       {/* Form card */}
-      <div className="rounded-xl border border-white/5 bg-[#0E0E15]">
+      <div className="rounded-xl border border-white/5 bg-[var(--surface-elevated)]">
         {/* Header */}
         <div className="border-b border-white/5 px-5 py-4">
           <div className="flex items-center gap-2">
-            <p className="text-[10px] font-semibold uppercase tracking-widest text-[#6366F1]">Step 8</p>
-            <span className="rounded-full bg-[#22D3A3]/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-[#22D3A3]">Optional</span>
+            <p className="text-[10px] font-semibold uppercase tracking-widest text-[var(--accent)]">Step 8</p>
+            <span className="rounded-full bg-[var(--success)]/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-[var(--success)]">Optional</span>
           </div>
-          <h2 className="mt-1 text-lg font-semibold text-[#F0F0FF]">Transform results</h2>
-          <p className="mt-1 text-sm text-[#7B7B9A]">
+          <h2 className="mt-1 text-lg font-semibold text-[var(--foreground)]">Transform results</h2>
+          <p className="mt-1 text-sm text-[var(--text-secondary)]">
             Filter, sort, or limit the{' '}
-            <span className="font-medium text-[#F0F0FF]">{baseResult.rowCount} rows</span>{' '}
+            <span className="font-medium text-[var(--foreground)]">{baseResult.rowCount} rows</span>{' '}
             returned above. This compiles as a derived subquery — the original query is never modified.
           </p>
         </div>
@@ -95,12 +95,12 @@ export default function StepTransform({
           {/* ── Filters ─────────────────────────────────────────────────── */}
           <div className="px-5 py-4">
             <div className="mb-3 flex items-center justify-between">
-              <p className="text-xs font-semibold uppercase tracking-wider text-[#7B7B9A]">Filter</p>
+              <p className="text-xs font-semibold uppercase tracking-wider text-[var(--text-secondary)]">Filter</p>
               <button
                 type="button"
                 onClick={addFilter}
                 disabled={columns.length === 0}
-                className="flex items-center gap-1.5 rounded-md border border-white/8 px-2.5 py-1 text-xs text-[#7B7B9A] transition-colors hover:text-[#F0F0FF] disabled:opacity-40"
+                className="flex items-center gap-1.5 rounded-md border border-white/8 px-2.5 py-1 text-xs text-[var(--text-secondary)] transition-colors hover:text-[var(--foreground)] disabled:opacity-40"
               >
                 <Plus size={11} />
                 Add
@@ -115,14 +115,14 @@ export default function StepTransform({
                     <select
                       value={f.column}
                       onChange={(e) => updateFilter(i, { ...f, column: e.target.value })}
-                      className="h-10 flex-[2] min-w-[140px] rounded-md border border-white/8 bg-[#0A0A0F] px-3 text-sm text-[#F0F0FF] outline-none focus:border-[#6366F1]/40 transition-colors"
+                      className="h-10 flex-[2] min-w-[140px] rounded-md border border-white/8 bg-[var(--background)] px-3 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)]/40 transition-colors"
                     >
                       {columns.map((c) => <option key={c} value={c}>{prettyCol(c)}</option>)}
                     </select>
                     <select
                       value={f.operator}
                       onChange={(e) => updateFilter(i, { ...f, operator: e.target.value as DerivedFilterStep['operator'] })}
-                      className="h-10 w-24 rounded-md border border-white/8 bg-[#0A0A0F] px-3 text-sm text-[#F0F0FF] outline-none focus:border-[#6366F1]/40 transition-colors"
+                      className="h-10 w-24 rounded-md border border-white/8 bg-[var(--background)] px-3 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)]/40 transition-colors"
                     >
                       {OPERATORS.map((op) => <option key={op} value={op}>{op}</option>)}
                     </select>
@@ -136,12 +136,12 @@ export default function StepTransform({
                         });
                       }}
                       placeholder={f.operator === 'IN' ? 'val1, val2…' : 'Value'}
-                      className="h-10 flex-[2] min-w-[120px] rounded-md border border-white/8 bg-[#0A0A0F] px-3 text-sm text-[#F0F0FF] outline-none placeholder:text-[#3F3F5C] focus:border-[#6366F1]/40 transition-colors"
+                      className="h-10 flex-[2] min-w-[120px] rounded-md border border-white/8 bg-[var(--background)] px-3 text-sm text-[var(--foreground)] outline-none placeholder:text-[var(--muted-foreground)] focus:border-[var(--accent)]/40 transition-colors"
                     />
                     <button
                       type="button"
                       onClick={() => removeFilter(i)}
-                      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-white/8 text-[#44445E] transition-colors hover:border-[#F87171]/30 hover:text-[#F87171]"
+                      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-white/8 text-[var(--text-muted)] transition-colors hover:border-[var(--error)]/30 hover:text-[var(--error)]"
                     >
                       <X size={14} />
                     </button>
@@ -152,21 +152,21 @@ export default function StepTransform({
           </div>
 
           {/* ── Sort ─────────────────────────────────────────────────────── */}
-          <div className="px-5 py-4">
-            <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-[#7B7B9A]">Sort</p>
+            <div className="px-5 py-4">
+            <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-[var(--text-secondary)]">Sort</p>
             <div className="space-y-2">
               {transform.orderBy.map((o, i) => (
-                <div key={i} className="flex items-center gap-2.5 rounded-md border border-white/5 bg-[#111118] px-3 py-2.5">
-                  <span className="flex-1 min-w-0 truncate text-sm text-[#D6D6EA]">{prettyCol(o.column)}</span>
+                <div key={i} className="flex items-center gap-2.5 rounded-md border border-white/5 bg-[var(--surface-elevated)] px-3 py-2.5">
+                  <span className="flex-1 min-w-0 truncate text-sm text-[var(--muted-foreground)]">{prettyCol(o.column)}</span>
                   <button
                     type="button"
                     onClick={() => toggleDir(i)}
-                    className="flex items-center gap-1 rounded border border-white/8 px-2 py-1 text-xs font-medium text-[#7B7B9A] transition-colors hover:text-[#F0F0FF]"
+                    className="flex items-center gap-1 rounded border border-white/8 px-2 py-1 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:text-[var(--foreground)]"
                   >
                     {o.direction === 'ASC' ? <ArrowUp size={11} /> : <ArrowDown size={11} />}
                     {o.direction}
                   </button>
-                  <button type="button" onClick={() => removeSort(i)} className="shrink-0 text-[#3F3F5C] transition-colors hover:text-[#F87171]">
+                  <button type="button" onClick={() => removeSort(i)} className="shrink-0 text-[var(--text-muted)] transition-colors hover:text-[var(--error)]">
                     <X size={13} />
                   </button>
                 </div>
@@ -180,7 +180,7 @@ export default function StepTransform({
                         key={c}
                         type="button"
                         onClick={() => addSort(c)}
-                        className="flex items-center gap-1.5 rounded-md border border-white/8 px-3 py-1.5 text-sm text-[#7B7B9A] transition-colors hover:border-white/15 hover:text-[#F0F0FF]"
+                        className="flex items-center gap-1.5 rounded-md border border-white/8 px-3 py-1.5 text-sm text-[var(--text-secondary)] transition-colors hover:border-white/15 hover:text-[var(--foreground)]"
                       >
                         <Plus size={12} />
                         {prettyCol(c)}
@@ -193,7 +193,7 @@ export default function StepTransform({
 
           {/* ── Limit ────────────────────────────────────────────────────── */}
           <div className="px-5 py-4">
-            <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-[#7B7B9A]">Limit</p>
+            <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-[var(--text-secondary)]">Limit</p>
             <div className="flex items-center gap-3">
               <input
                 type="range"
@@ -201,7 +201,7 @@ export default function StepTransform({
                 max={5000}
                 value={transform.limit}
                 onChange={(e) => onChange({ ...transform, limit: Number(e.target.value) })}
-                className="h-1 flex-1 cursor-pointer appearance-none rounded-full bg-white/8 accent-[#6366F1]"
+                className="h-1 flex-1 cursor-pointer appearance-none rounded-full bg-white/8 accent-[var(--accent)]"
               />
               <input
                 type="number"
@@ -209,16 +209,16 @@ export default function StepTransform({
                 max={5000}
                 value={transform.limit}
                 onChange={(e) => onChange({ ...transform, limit: Math.max(1, Math.min(5000, Number(e.target.value) || 1000)) })}
-                className="h-9 w-20 rounded-md border border-white/8 bg-[#0A0A0F] px-2 text-center text-sm text-[#F0F0FF] outline-none focus:border-[#6366F1]/40 transition-colors"
+                className="h-9 w-20 rounded-md border border-white/8 bg-[var(--background)] px-2 text-center text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)]/40 transition-colors"
               />
             </div>
-            <p className="mt-2 text-xs text-[#44445E]">Caps at 5000 rows</p>
+            <p className="mt-2 text-xs text-[var(--text-muted)]">Caps at 5000 rows</p>
           </div>
         </div>
 
         {/* Error */}
         {error && (
-          <div className="mx-5 mb-4 rounded-lg border border-[#F87171]/15 bg-[#F87171]/5 px-4 py-3 text-sm text-[#F87171]">
+          <div className="mx-5 mb-4 rounded-lg border border-[var(--error)]/15 bg-[var(--error)]/5 px-4 py-3 text-sm text-[var(--error)]">
             {error}
           </div>
         )}

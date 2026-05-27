@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import axios from 'axios';
 
 import api from '@/lib/api';
 import { Report, ReportRefreshResult, SavedChart } from '@/types';
@@ -14,6 +15,23 @@ function readStoredAccountId(): string | null {
 
   const stored = globalThis.window.localStorage.getItem(ACCOUNT_ID_STORAGE_KEY);
   return stored && /^\d+$/.test(stored) ? stored : null;
+}
+
+function logReportError(scope: string, error: unknown) {
+  if (axios.isAxiosError(error)) {
+    console.error(`[useReports] ${scope} failed`, {
+      message: error.message,
+      code: error.code,
+      status: error.response?.status,
+      responseData: error.response?.data,
+      method: error.config?.method,
+      url: error.config?.url,
+      timeout: error.config?.timeout,
+    });
+    return;
+  }
+
+  console.error(`[useReports] ${scope} failed`, error);
 }
 
 export function useReports() {
@@ -87,7 +105,8 @@ export function useReport(reportId?: string, options: { mode?: 'view' | 'edit'; 
       const { data } = await api.get(`/api/reports/${reportId}${queryParams}`);
       setReport(data.report);
     } catch (requestError: any) {
-      setError(requestError?.response?.data?.message || 'Unable to load report.');
+      logReportError('fetchReport', requestError);
+      setError('Something went wrong. Please try again.');
     } finally {
       setIsLoading(false);
     }
@@ -95,8 +114,8 @@ export function useReport(reportId?: string, options: { mode?: 'view' | 'edit'; 
 
   useEffect(() => {
     fetchReport().catch((requestError) => {
-      console.error('Failed to fetch report:', requestError);
-      setError('Unable to load report.');
+      logReportError('fetchReport effect', requestError);
+      setError('Something went wrong. Please try again.');
     });
   }, [fetchReport]);
 

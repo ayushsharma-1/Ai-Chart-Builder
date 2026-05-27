@@ -10,17 +10,21 @@ import { useAccountId } from './useAccountId';
 
 const STORAGE_KEY = 'lens.chat.state.v2';
 
-function getErrorMessage(error: unknown) {
+function logQueryError(scope: string, error: unknown) {
   if (axios.isAxiosError(error)) {
-    if (error.response?.status === 422) {
-      return (error.response?.data?.message as string | undefined)
-        || 'Please simplify your prompt or query and try again.';
-    }
-
-    return (error.response?.data?.message as string | undefined) || error.message || 'Something went wrong. Please try again later.';
+    console.error(`[useQuery] ${scope} failed`, {
+      message: error.message,
+      code: error.code,
+      status: error.response?.status,
+      responseData: error.response?.data,
+      method: error.config?.method,
+      url: error.config?.url,
+      timeout: error.config?.timeout,
+    });
+    return;
   }
 
-  return error instanceof Error ? error.message : 'Something went wrong. Please try again later.';
+  console.error(`[useQuery] ${scope} failed`, error);
 }
 
 function replaceLoadingMessage(
@@ -135,9 +139,9 @@ function applyFailureResponse(
   activeSessionId: string,
   data: { type: string; message?: string },
 ) {
-  const responseMessage = data.type === 'validation_error'
-    ? (data.message || 'Please simplify your prompt or query and try again.')
-    : (data.message || 'Something went wrong. Please try again later.');
+  const responseMessage = data.type === 'clarification' || data.type === 'non_analytics'
+    ? (data.message || 'Something went wrong. Please try again.')
+    : 'Something went wrong. Please try again.';
 
   let nextStatus: 'done' | 'error' = 'done';
   let nextType: Message['type'] | undefined;
@@ -338,6 +342,8 @@ export function useQuery() {
           previousSql: currentChart.sql,
           previousChartType: currentChart.chartType,
         } : undefined,
+      }, {
+        timeout: 120000,
       });
 
       if (data.success) {
@@ -354,7 +360,8 @@ export function useQuery() {
         )));
       }
     } catch (error) {
-      const fallbackMessage = getErrorMessage(error);
+      logQueryError('sendPrompt', error);
+      const fallbackMessage = 'Something went wrong. Please try again.';
 
       setSessions((previous) => previous.map((session) => (
         session.id === activeSessionId

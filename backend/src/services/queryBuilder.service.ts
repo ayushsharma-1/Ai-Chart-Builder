@@ -1,6 +1,6 @@
 import { SCHEMA_TABLES } from '../utils/dataModel';
 
-export type AggregateFunction = 'none' | 'COUNT' | 'SUM' | 'AVG' | 'MAX' | 'MIN';
+export type AggregateFunction = 'none' | 'COUNT' | 'SUM' | 'AVG' | 'MAX' | 'MIN' | 'DISTINCT';
 
 export type JoinType = 'INNER' | 'LEFT' | 'RIGHT' | 'FULL';
 

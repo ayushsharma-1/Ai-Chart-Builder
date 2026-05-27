@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import api from '@/lib/api';
 import { useAccountId } from '@/hooks/useAccountId';
-import { QueryBuilderExecuteResult, QueryBuilderPreviewResult, QueryPlan, TransformPlan } from '@/src/types/queryBuilder';
+import { QueryBuilderExecuteResult, QueryBuilderPreviewResult, QueryPlan, TransformPlan } from '@/types/queryBuilder';
 
 const MAX_UNDO_STATES = 20;
 

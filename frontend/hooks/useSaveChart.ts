@@ -1,11 +1,29 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import axios from 'axios';
 
 type SaveAction = () => Promise<unknown>;
 
 interface Options {
   persistSuccess?: boolean;
+}
+
+function logSaveError(scope: string, saveError: unknown) {
+  if (axios.isAxiosError(saveError)) {
+    console.error(`[useSaveChart] ${scope} failed`, {
+      message: saveError.message,
+      code: saveError.code,
+      status: saveError.response?.status,
+      responseData: saveError.response?.data,
+      method: saveError.config?.method,
+      url: saveError.config?.url,
+      timeout: saveError.config?.timeout,
+    });
+    return;
+  }
+
+  console.error(`[useSaveChart] ${scope} failed`, saveError);
 }
 
 export function useSaveChart(saveAction: SaveAction, options: Options = {}) {
@@ -37,8 +55,8 @@ export function useSaveChart(saveAction: SaveAction, options: Options = {}) {
 
       return result;
     } catch (saveError: any) {
-      const message = saveError?.response?.data?.message || saveError?.message || 'Unable to save right now.';
-      setError(message);
+      logSaveError('runSave', saveError);
+      setError('Something went wrong. Please try again.');
       throw saveError;
     } finally {
       saveInFlightRef.current = false;

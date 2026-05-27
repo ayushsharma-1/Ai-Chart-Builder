@@ -42,7 +42,7 @@ const FORBIDDEN_SYSTEM_REFS = [
   'mysql.user',
   'mysql.db',
 ];
-const FORBIDDEN_PII_COLUMNS = new Set(['emailid', 'contactnumber', 'formatted_contact_number']);
+
 
 const FORBIDDEN_FUNCTION_NAMES = new Set([
   'LOAD_FILE',
@@ -370,11 +370,6 @@ function validateAst(ast: Select, scopeCteNames: Set<string> = new Set()): strin
   }
 
   const selectColumns = collectColumnRefs({ columns: ast.columns });
-  for (const ref of selectColumns) {
-    if (FORBIDDEN_PII_COLUMNS.has(ref.column)) {
-      return 'Query requests restricted data fields.';
-    }
-  }
 
   const allFunctions = collectFunctions(ast);
   for (const fn of allFunctions) {
