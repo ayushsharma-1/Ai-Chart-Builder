@@ -52,7 +52,7 @@ function cellText(value: unknown) {
   function EmptyState({ title, subtitle }: Readonly<{ title: string; subtitle: string }>) {
   return (
     <div className="flex min-h-[360px] flex-col items-center justify-center px-6 text-center">
-      <div className="flex h-14 w-14 items-center justify-center rounded-xl border border-white/5 bg-[var(--surface-elevated)] text-[var(--accent)]">
+    <div className="flex h-14 w-14 items-center justify-center rounded-xl border border-white/5 bg-[var(--surface-elevated)] text-[var(--accent)]">
         <Table2 size={24} />
       </div>
       <h3 className="mt-4 font-syne text-lg font-semibold text-[var(--foreground)]">{title}</h3>

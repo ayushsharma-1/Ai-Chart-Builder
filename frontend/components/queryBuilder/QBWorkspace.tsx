@@ -57,8 +57,8 @@ export default function QBWorkspace({
   }
 
   return (
-    <main className="flex min-w-0 flex-1 flex-col bg-[#0A0A0F]">
-      <div className="sticky top-0 z-20 flex h-14 shrink-0 items-center justify-between gap-4 border-b border-white/5 bg-[#0A0A0F]/95 px-6 backdrop-blur">
+    <main className="flex min-w-0 flex-1 flex-col bg-[#090910]">
+      <div className="sticky top-0 z-20 flex h-14 shrink-0 items-center justify-between gap-4 border-b border-white/5 bg-[#090910]/95 px-6 backdrop-blur">
         <div className="min-w-0">
           <div className="truncate font-syne text-sm font-semibold text-[#F0F0FF]">
             {tableLabel(plan.table)}

@@ -27,7 +27,7 @@ export default function QueryBuilderPage() {
 	} = useQueryBuilder();
 
 	return (
-		<div className="flex h-screen flex-col bg-slate-50 text-slate-900">
+		<div className="flex h-screen flex-col bg-[#090910] text-[#F0F0FF]">
 			<Navbar />
 
 			<div className="flex min-h-0 flex-1 overflow-hidden">
