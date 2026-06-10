@@ -123,7 +123,7 @@ export function QBFieldRow({
       </button>
 
       {selected && menuOpen && (
-        <div className="absolute right-1 top-9 z-30 w-56 rounded-lg border border-white/5 bg-[#111118] p-3 shadow-2xl shadow-black/40">
+        <div className="mt-1 w-full rounded-lg border border-white/5 bg-[#111118] p-3">
           <label className="block text-[10px] uppercase tracking-[0.14em] text-[#7B7B9A]">
             <span>Alias</span>
             <div className="mt-1">
@@ -144,7 +144,7 @@ export function QBFieldRow({
               className="mt-1 h-8 w-full rounded-md border border-white/10 bg-[#0A0A0F] px-2 font-dm-sans text-xs normal-case tracking-normal text-[#F0F0FF] outline-none focus:border-[#6366F1]/50"
             >
               {AGGREGATES.map((aggregate) => (
-                <option key={aggregate} value={aggregate}>
+                <option key={aggregate} value={aggregate} className="bg-[#0A0A0F] text-[#F0F0FF]">
                   {aggregate}
                 </option>
               ))}

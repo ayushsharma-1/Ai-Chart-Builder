@@ -76,7 +76,25 @@ export default function BarChartView({ data, xAxis, yAxis, colors, seriesKeys, s
         }, {}),
       };
 
-    const { leftWidth, rightWidth } = calculateAxisWidths(data, assignments, useDualAxes);
+  if (useDualAxes && !stacked) {
+    let dominantKey = visibleSeries[0];
+    let max = -Infinity;
+    visibleSeries.forEach((key) => {
+      const seriesMax = Math.max(...data.map((row) => Number(row?.[key]) || 0));
+      if (seriesMax > max) {
+        max = seriesMax;
+        dominantKey = key;
+      }
+    });
+
+    if (assignments[dominantKey] === 'right') {
+      visibleSeries.forEach((key) => {
+        assignments[key] = assignments[key] === 'left' ? 'right' : 'left';
+      });
+    }
+  }
+
+  const { leftWidth, rightWidth } = calculateAxisWidths(data, assignments, useDualAxes);
     const leftAxisLabel = useDualAxes ? buildAxisLabel(visibleSeries, assignments, 'left') : undefined;
     const rightAxisLabel = useDualAxes ? buildAxisLabel(visibleSeries, assignments, 'right') : undefined;
     const leftAxisMetricKey = visibleSeries.find((key) => assignments[key] === 'left') || yAxis;

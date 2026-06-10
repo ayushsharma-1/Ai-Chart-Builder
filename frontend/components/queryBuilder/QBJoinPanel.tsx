@@ -121,20 +121,21 @@ export default function QBJoinPanel({ plan, onChange, schema, onClose }: Readonl
       ],
     });
     setForm({ targetTable: '', joinType: 'LEFT', leftCol: '', rightCol: '' });
+    onClose();
   }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4 py-6 backdrop-blur-sm">
-      <div className="flex max-h-[86vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-white/10 bg-[var(--surface-elevated)] shadow-2xl shadow-black/50">
+      <div className="flex max-h-[86vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-white/10 bg-gray-900 shadow-2xl shadow-black/50">
         <div className="flex items-center justify-between border-b border-white/5 px-5 py-4">
           <div>
-            <h2 className="font-syne text-lg font-semibold text-[var(--accent-foreground)]">Add join</h2>
-            <p className="mt-1 text-xs text-[var(--text-muted)]">{tableLabel(baseTable)} as the base table</p>
+            <h2 className="font-syne text-lg font-semibold text-white">Add join</h2>
+            <p className="mt-1 text-xs text-gray-400">{tableLabel(baseTable)} as the base table</p>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--text-muted)] hover:bg-white/5 hover:text-[var(--accent-foreground)]"
+            className="flex h-8 w-8 items-center justify-center rounded-lg text-gray-400 hover:bg-white/5 hover:text-white"
             aria-label="Close join panel"
           >
             <X size={16} />
@@ -148,7 +149,7 @@ export default function QBJoinPanel({ plan, onChange, schema, onClose }: Readonl
               type="button"
               onClick={() => setMode(tab)}
               className={`border-b-2 px-4 py-3 text-sm capitalize transition-colors ${
-                mode === tab ? 'border-[var(--accent)] text-[var(--accent-foreground)]' : 'border-transparent text-[var(--text-muted)] hover:text-[var(--accent-foreground)]'
+                mode === tab ? 'border-[var(--accent)] text-white' : 'border-transparent text-gray-400 hover:text-white'
               }`}
             >
               {tab === 'recommended' ? 'Recommended' : 'Custom'}
@@ -160,7 +161,7 @@ export default function QBJoinPanel({ plan, onChange, schema, onClose }: Readonl
           {mode === 'recommended' && (
             <div className="space-y-3">
               {recommended.length === 0 ? (
-                <div className="rounded-lg border border-dashed border-white/10 px-4 py-6 text-sm text-[var(--text-muted)]">
+                <div className="rounded-lg border border-dashed border-white/10 px-4 py-6 text-sm text-gray-400">
                   No recommended joins for this table.
                 </div>
               ) : (
@@ -172,7 +173,7 @@ export default function QBJoinPanel({ plan, onChange, schema, onClose }: Readonl
                     <div
                       key={relationKey(relation)}
                       className={`rounded-lg border p-3 transition-colors ${
-                        active ? 'border-[var(--success)]/25 bg-[var(--success)]/5' : 'border-white/5 bg-[var(--surface-elevated)]'
+                        active ? 'border-[var(--success)]/25 bg-[var(--success)]/5' : 'border-white/5 bg-gray-900'
                       }`}
                     >
                       <button
@@ -180,32 +181,32 @@ export default function QBJoinPanel({ plan, onChange, schema, onClose }: Readonl
                         onClick={() => toggleRecommended(relation)}
                         className="flex w-full items-center gap-3 text-left"
                       >
-                        <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md ${active ? 'bg-[var(--success)]/15 text-[var(--success)]' : 'bg-white/5 text-[var(--text-muted)]'}`}>
+                        <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md ${active ? 'bg-[var(--success)]/15 text-[var(--success)]' : 'bg-white/5 text-gray-400'}`}>
                           <Link2 size={14} />
                         </span>
                         <span className="min-w-0 flex-1">
-                          <span className="block text-sm text-[var(--accent-foreground)]">
+                          <span className="block text-sm text-white">
                             {tableLabel(relation.leftTable)} ↔ {tableLabel(relation.rightTable)}
                           </span>
-                          <span className="mt-0.5 block truncate font-mono text-[11px] text-[var(--text-muted)]">
+                          <span className="mt-0.5 block truncate font-mono text-[11px] text-gray-400">
                             via {relation.leftCol} → {relation.rightCol}
                           </span>
                         </span>
-                        <span className={`rounded-md border px-2 py-1 text-[10px] font-semibold ${active ? 'border-[var(--success)]/20 text-[var(--success)]' : 'border-white/10 text-[var(--text-secondary)]'}`}>
+                        <span className={`rounded-md border px-2 py-1 text-[10px] font-semibold ${active ? 'border-[var(--success)]/20 text-[var(--success)]' : 'border-white/10 text-gray-300'}`}>
                           {active ? 'ACTIVE' : 'ADD'}
                         </span>
                       </button>
 
                       {active && (
-                        <label className="mt-3 block text-[10px] uppercase tracking-[0.14em] text-[var(--text-muted)]">
+                        <label className="mt-3 block text-[10px] uppercase tracking-[0.14em] text-gray-400">
                           Join type
                           <select
                             value={activeJoin?.joinType ?? 'LEFT'}
                             onChange={(event) => updateRecommendedType(relation, event.target.value as JoinType)}
-                            className="mt-1 h-8 w-36 rounded-md border border-white/10 bg-[var(--surface-elevated)] px-2 font-dm-sans text-xs normal-case tracking-normal text-[var(--accent-foreground)] outline-none focus:border-[var(--accent)]/50"
+                            className="mt-1 h-8 w-36 rounded-md border border-white/10 bg-gray-900 px-2 font-dm-sans text-xs normal-case tracking-normal text-white outline-none focus:border-[var(--accent)]/50"
                           >
                             {JOIN_TYPES.map((joinType) => (
-                              <option key={joinType} value={joinType}>
+                              <option key={joinType} value={joinType} className="bg-gray-900 text-white">
                                 {joinType}
                               </option>
                             ))}
@@ -222,15 +223,15 @@ export default function QBJoinPanel({ plan, onChange, schema, onClose }: Readonl
           {mode === 'custom' && (
                 <div className="space-y-5">
               <div>
-                <p className="mb-2 text-xs uppercase tracking-[0.14em] text-[var(--text-muted)]">Target table</p>
+                <p className="mb-2 text-xs uppercase tracking-[0.14em] text-gray-400">Target table</p>
                 <select
                   value={form.targetTable}
                   onChange={(event) => setForm({ ...form, targetTable: event.target.value, leftCol: '', rightCol: '' })}
-                  className="h-10 w-full rounded-lg border border-white/10 bg-[var(--surface-elevated)] px-3 text-sm text-[var(--accent-foreground)] outline-none focus:border-[var(--accent)]/50"
+                  className="h-10 w-full rounded-lg border border-white/10 bg-gray-900 px-3 text-sm text-white outline-none focus:border-[var(--accent)]/50"
                 >
-                  <option value="">Select table</option>
+                  <option value="" className="bg-gray-900 text-white">Select table</option>
                   {otherTables.map((table) => (
-                    <option key={table.name} value={table.name}>
+                    <option key={table.name} value={table.name} className="bg-gray-900 text-white">
                       {tableLabel(table.name)}
                     </option>
                   ))}
@@ -238,7 +239,7 @@ export default function QBJoinPanel({ plan, onChange, schema, onClose }: Readonl
               </div>
 
               <div>
-                <p className="mb-2 text-xs uppercase tracking-[0.14em] text-[var(--text-muted)]">Join type</p>
+                <p className="mb-2 text-xs uppercase tracking-[0.14em] text-gray-400">Join type</p>
                 <div className="grid grid-cols-4 gap-2">
                   {JOIN_TYPES.map((joinType) => (
                     <button
@@ -248,7 +249,7 @@ export default function QBJoinPanel({ plan, onChange, schema, onClose }: Readonl
                       className={`rounded-lg border px-2 py-2 text-xs font-semibold transition-colors ${
                           form.joinType === joinType
                           ? 'border-[var(--accent)]/40 bg-[var(--accent)]/10 text-[var(--accent)]'
-                          : 'border-white/5 bg-[var(--surface-elevated)] text-[var(--text-muted)] hover:text-[var(--accent-foreground)]'
+                          : 'border-white/5 bg-gray-900 text-gray-400 hover:text-white'
                       }`}
                     >
                       {joinType}
@@ -259,34 +260,34 @@ export default function QBJoinPanel({ plan, onChange, schema, onClose }: Readonl
 
               {form.targetTable && (
                 <div>
-                  <p className="mb-2 text-xs uppercase tracking-[0.14em] text-[var(--text-muted)]">Condition</p>
+                  <p className="mb-2 text-xs uppercase tracking-[0.14em] text-gray-400">Condition</p>
                   <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-end gap-2">
-                    <label className="min-w-0 text-[10px] uppercase tracking-[0.14em] text-[var(--text-muted)]">
+                    <label className="min-w-0 text-[10px] uppercase tracking-[0.14em] text-gray-400">
                       {tableLabel(baseTable)}
                       <select
                         value={form.leftCol}
                         onChange={(event) => setForm({ ...form, leftCol: event.target.value })}
-                        className="mt-1 h-10 w-full rounded-lg border border-white/10 bg-[var(--surface-elevated)] px-3 font-dm-sans text-sm normal-case tracking-normal text-[var(--accent-foreground)] outline-none focus:border-[var(--accent)]/50"
+                        className="mt-1 h-10 w-full rounded-lg border border-white/10 bg-gray-900 px-3 font-dm-sans text-sm normal-case tracking-normal text-white outline-none focus:border-[var(--accent)]/50"
                       >
-                        <option value="">Column</option>
+                        <option value="" className="bg-gray-900 text-white">Column</option>
                         {baseColumns.map((column) => (
-                          <option key={column} value={column}>
+                          <option key={column} value={column} className="bg-gray-900 text-white">
                             {prettyColumn(column)}
                           </option>
                         ))}
                       </select>
                     </label>
-                    <span className="pb-2 text-sm font-semibold text-[var(--text-muted)]">=</span>
-                    <label className="min-w-0 text-[10px] uppercase tracking-[0.14em] text-[var(--text-muted)]">
+                    <span className="pb-2 text-sm font-semibold text-gray-400">=</span>
+                    <label className="min-w-0 text-[10px] uppercase tracking-[0.14em] text-gray-400">
                       {tableLabel(form.targetTable)}
                       <select
                         value={form.rightCol}
                         onChange={(event) => setForm({ ...form, rightCol: event.target.value })}
-                        className="mt-1 h-10 w-full rounded-lg border border-white/10 bg-[var(--surface-elevated)] px-3 font-dm-sans text-sm normal-case tracking-normal text-[var(--accent-foreground)] outline-none focus:border-[var(--accent)]/50"
+                        className="mt-1 h-10 w-full rounded-lg border border-white/10 bg-gray-900 px-3 font-dm-sans text-sm normal-case tracking-normal text-white outline-none focus:border-[var(--accent)]/50"
                       >
-                        <option value="">Column</option>
+                        <option value="" className="bg-gray-900 text-white">Column</option>
                         {targetColumns.map((column) => (
-                          <option key={column} value={column}>
+                          <option key={column} value={column} className="bg-gray-900 text-white">
                             {prettyColumn(column)}
                           </option>
                         ))}
@@ -297,7 +298,7 @@ export default function QBJoinPanel({ plan, onChange, schema, onClose }: Readonl
               )}
 
               {form.targetTable && form.leftCol && form.rightCol && (
-                <div className="rounded-lg border border-white/5 bg-[var(--surface-elevated)] px-3 py-2 font-mono text-xs text-[var(--text-muted)]">
+                <div className="rounded-lg border border-white/5 bg-gray-900 px-3 py-2 font-mono text-xs text-gray-400">
                   <span className={JOIN_COLORS[form.joinType]}>{form.joinType} JOIN</span> {form.targetTable} ON {baseTable}.{form.leftCol} = {form.targetTable}.{form.rightCol}
                 </div>
               )}
@@ -307,7 +308,7 @@ export default function QBJoinPanel({ plan, onChange, schema, onClose }: Readonl
               <button
                 type="button"
                 onClick={addCustomJoin}
-                className="inline-flex items-center gap-2 rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-[var(--accent-foreground)] hover:bg-[var(--accent)]/90"
+                className="inline-flex items-center gap-2 rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white hover:bg-[var(--accent)]/90"
               >
                 <Plus size={14} />
                 Add Join

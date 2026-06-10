@@ -74,6 +74,25 @@ export default function LineChartView(props: Readonly<Props>) {
 
   // Dynamic Y-axis assignment and width calculation
   const { useDualAxes, assignments } = getSeriesYAxisAssignment(data, visibleSeries);
+
+  if (useDualAxes) {
+    let dominantKey = visibleSeries[0];
+    let max = -Infinity;
+    visibleSeries.forEach((key) => {
+      const seriesMax = Math.max(...data.map((row) => Number(row?.[key]) || 0));
+      if (seriesMax > max) {
+        max = seriesMax;
+        dominantKey = key;
+      }
+    });
+
+    if (assignments[dominantKey] === 'right') {
+      visibleSeries.forEach((key) => {
+        assignments[key] = assignments[key] === 'left' ? 'right' : 'left';
+      });
+    }
+  }
+
   const { leftWidth, rightWidth } = calculateAxisWidths(data, assignments, useDualAxes);
   const leftAxisLabel = useDualAxes ? buildAxisLabel(visibleSeries, assignments, 'left') : undefined;
   const rightAxisLabel = useDualAxes ? buildAxisLabel(visibleSeries, assignments, 'right') : undefined;

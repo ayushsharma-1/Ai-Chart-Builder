@@ -118,7 +118,7 @@ export function getSeriesYAxisAssignment(
     return { useDualAxes: false, assignments };
   }
 
-  // Find the maximum value for each series key
+  // Rule 1: Find the maximum value for each series key
   const maxValues = seriesKeys.map((key) => {
     let max = 0;
     data.forEach((row) => {
@@ -130,19 +130,28 @@ export function getSeriesYAxisAssignment(
     return { key, max };
   });
 
-  // Sort series keys by their max value
+  // Rule 3: Sort series keys by their max value DESCENDING
   const sorted = [...maxValues].sort((a, b) => b.max - a.max);
   const primaryMax = sorted[0].max;
   const secondaryMax = sorted[sorted.length - 1].max;
 
-  // Use dual axes if there is at least a 3x difference in magnitude
-  const useDualAxes = primaryMax > 0 && secondaryMax > 0 && primaryMax / secondaryMax >= 3.0;
+  // Rule 2: Use dual axes if there is at least a 10x difference in magnitude
+  const useDualAxes = primaryMax > 0 && secondaryMax > 0 && primaryMax / secondaryMax >= 10.0;
 
   if (useDualAxes) {
-    // Determine cutoff using geometric mean to separate scales cleanly
-    const threshold = Math.sqrt(primaryMax * secondaryMax);
-    maxValues.forEach((item) => {
-      assignments[item.key] = item.max >= threshold ? 'left' : 'right';
+    // Rule 3: Top 50% to 'left', bottom 50% to 'right'
+    const leftCount = Math.ceil(sorted.length / 2);
+    sorted.forEach((item, index) => {
+      assignments[item.key] = index < leftCount ? 'left' : 'right';
+    });
+
+    // Rule 4: Name-based override (percentage/rate metrics always go right)
+    const overrideKeywords = ['percentage', 'pct', 'rate', 'ratio', 'efficiency', 'score', 'percent'];
+    sorted.forEach((item) => {
+      const normalizedKey = item.key.toLowerCase();
+      if (overrideKeywords.some((keyword) => normalizedKey.includes(keyword))) {
+        assignments[item.key] = 'right';
+      }
     });
   } else {
     // Put all on the left axis
