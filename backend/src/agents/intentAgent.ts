@@ -523,9 +523,7 @@ export async function analyzeIntent(
         max_tokens: 250,
         response_format: { type: 'json_object' },
       }, {
-        headers: {
-          ...(observation.traceId ? { 'x-portkey-trace-id': observation.traceId } : {})
-        }
+        ...(observation.traceId ? { traceId: observation.traceId } : {})
       }),
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('Intent agent timeout (6s)')), 6000)

@@ -657,9 +657,7 @@ export async function generateSqlFromAgent(input: SqlAgentInput): Promise<ChartA
         max_tokens: 1800,
         response_format: { type: 'json_object' },
       }, {
-        headers: {
-          ...(observation.traceId ? { 'x-portkey-trace-id': observation.traceId } : {})
-        }
+        ...(observation.traceId ? { traceId: observation.traceId } : {})
       });
 
       usage = completion.usage;
