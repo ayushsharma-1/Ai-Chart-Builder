@@ -46,6 +46,10 @@ export async function generateDashboardInsights(reportTitle: string, charts: Ins
       temperature: 0.2,
       max_tokens: 900,
       response_format: { type: 'json_object' },
+    }, {
+      headers: {
+        ...(observation.traceId ? { 'x-portkey-trace-id': observation.traceId } : {})
+      }
     });
 
     usage = completion.usage;
@@ -129,6 +133,10 @@ export async function generateSqlExplanation(sql: string, chartTitle: string): P
       ],
       temperature: 0.3,
       max_tokens: 200,
+    }, {
+      headers: {
+        ...(observation.traceId ? { 'x-portkey-trace-id': observation.traceId } : {})
+      }
     });
 
     usage = completion.usage;

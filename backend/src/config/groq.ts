@@ -1,4 +1,5 @@
 import Groq from 'groq-sdk';
+import { PORTKEY_GATEWAY_URL, createHeaders } from 'portkey-ai';
 
 const apiKey = process.env.GROQ_API_KEY;
 
@@ -19,7 +20,25 @@ if (!apiKey) {
     },
   } as unknown as Groq;
 } else {
-  groqClient = new Groq({ apiKey });
+  const portkeyApiKey = process.env.PORTKEY_API_KEY;
+  if (portkeyApiKey) {
+    groqClient = new Groq({
+      apiKey,
+      baseURL: PORTKEY_GATEWAY_URL,
+      defaultHeaders: createHeaders({
+        provider: 'groq',
+        apiKey: portkeyApiKey,
+        metadata: {
+          environment: process.env.NODE_ENV || 'development'
+        },
+        retry: {
+          attempts: 3
+        }
+      })
+    });
+  } else {
+    groqClient = new Groq({ apiKey });
+  }
 }
 
 export default groqClient;
