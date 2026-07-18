@@ -62,6 +62,8 @@ export async function runFixAgent(input: RunFixAgentInput): Promise<{ fixedSql: 
       hasValidationIssues: Boolean(input.validationIssues?.length),
       hasMysqlError: Boolean(input.mysqlError),
     },
+    model: 'openai/gpt-oss-120b',
+    modelParameters: { provider: 'groq' },
   }, { asType: 'generation' });
 
   const start = Date.now();

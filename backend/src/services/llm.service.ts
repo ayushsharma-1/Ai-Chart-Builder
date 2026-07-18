@@ -20,6 +20,8 @@ export async function generateDashboardInsights(reportTitle: string, charts: Ins
       reportTitle,
       chartCount: charts.length,
     },
+    model: 'openai/gpt-oss-120b',
+    modelParameters: { provider: 'groq' },
   }, { asType: 'generation' });
 
   const start = Date.now();
@@ -98,6 +100,8 @@ export async function generateSqlExplanation(sql: string, chartTitle: string): P
       chartTitle,
       sql,
     },
+    model: 'openai/gpt-oss-120b',
+    modelParameters: { provider: 'groq' },
   }, { asType: 'generation' });
 
   const start = Date.now();

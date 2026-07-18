@@ -631,6 +631,8 @@ export async function generateSqlFromAgent(input: SqlAgentInput): Promise<ChartA
       metricType: input.intent.metricType,
       sessionId: input.sessionId || null,
     },
+    model: 'openai/gpt-oss-120b',
+    modelParameters: { provider: 'groq' },
   }, { asType: 'generation' });
 
   const systemPrompt = buildSqlAgentSystemPrompt(input.schema, input.intent);
@@ -670,6 +672,14 @@ export async function generateSqlFromAgent(input: SqlAgentInput): Promise<ChartA
         console.error('[SQLAgent] Zod validation failed:', validated.error.flatten());
         throw new Error('SQL agent returned invalid response structure');
       }
+
+      observation.update({
+        usageDetails: {
+          input: usage?.prompt_tokens || 0,
+          output: usage?.completion_tokens || 0,
+          total: usage?.total_tokens || 0,
+        },
+      });
 
       generatedSql = validated.data.sql || undefined;
       success = true;

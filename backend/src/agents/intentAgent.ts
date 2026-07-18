@@ -398,6 +398,8 @@ export async function analyzeIntent(
       previousTitle: previousContext?.previousTitle || null,
       sessionId: options?.sessionId || null,
     },
+    model: 'llama-3.1-8b-instant',
+    modelParameters: { provider: 'groq' },
   }, { asType: 'generation' });
 
   const start = Date.now();
