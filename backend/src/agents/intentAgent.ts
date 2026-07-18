@@ -398,7 +398,7 @@ export async function analyzeIntent(
       previousTitle: previousContext?.previousTitle || null,
       sessionId: options?.sessionId || null,
     },
-    model: 'llama-3.1-8b-instant',
+    model: '@thinkdeck/llama-3.1-8b-instant',
     modelParameters: { provider: 'groq' },
   }, { asType: 'generation' });
 
@@ -513,7 +513,7 @@ export async function analyzeIntent(
     // 6-second timeout to prevent pipeline stalls if intent agent hangs
     const completion = await Promise.race([
       groq.chat.completions.create({
-        model: 'llama-3.1-8b-instant',
+        model: '@thinkdeck/llama-3.1-8b-instant',
         messages: [
           // FROZEN system prompt goes first — maximizes token cache hit rate
           { role: 'system', content: [FROZEN_INTENT_SYSTEM, TABLE_HINTS].join('\n\n') },
@@ -587,7 +587,7 @@ export async function analyzeIntent(
     observation.end();
     logAICall({
       callType: 'intent_analysis',
-      model: 'llama-3.1-8b-instant',
+      model: '@thinkdeck/llama-3.1-8b-instant',
       sessionId: options?.sessionId,
       userPrompt,
       success,

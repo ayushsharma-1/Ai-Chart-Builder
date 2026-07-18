@@ -20,7 +20,7 @@ export async function generateDashboardInsights(reportTitle: string, charts: Ins
       reportTitle,
       chartCount: charts.length,
     },
-    model: 'openai/gpt-oss-120b',
+    model: '@thinkdeck/openai/gpt-oss-120b',
     modelParameters: { provider: 'groq' },
   }, { asType: 'generation' });
 
@@ -31,7 +31,7 @@ export async function generateDashboardInsights(reportTitle: string, charts: Ins
 
   try {
     const completion = await groq.chat.completions.create({
-      model: 'openai/gpt-oss-120b',
+      model: '@thinkdeck/openai/gpt-oss-120b',
       messages: [
         {
           role: 'system',
@@ -89,7 +89,7 @@ export async function generateDashboardInsights(reportTitle: string, charts: Ins
     observation.end();
     logAICall({
       callType: 'dashboard_insights',
-      model: 'openai/gpt-oss-120b',
+      model: '@thinkdeck/openai/gpt-oss-120b',
       success,
       errorMessage,
       latencyMs: Date.now() - start,
@@ -104,7 +104,7 @@ export async function generateSqlExplanation(sql: string, chartTitle: string): P
       chartTitle,
       sql,
     },
-    model: 'openai/gpt-oss-120b',
+    model: '@thinkdeck/openai/gpt-oss-120b',
     modelParameters: { provider: 'groq' },
   }, { asType: 'generation' });
 
@@ -115,7 +115,7 @@ export async function generateSqlExplanation(sql: string, chartTitle: string): P
 
   try {
     const completion = await groq.chat.completions.create({
-      model: 'openai/gpt-oss-120b',
+      model: '@thinkdeck/openai/gpt-oss-120b',
       messages: [
         {
           role: 'system',
@@ -161,7 +161,7 @@ export async function generateSqlExplanation(sql: string, chartTitle: string): P
     observation.end();
     logAICall({
       callType: 'sql_explanation',
-      model: 'openai/gpt-oss-120b',
+      model: '@thinkdeck/openai/gpt-oss-120b',
       userPrompt: `Chart title: "${chartTitle}"`,
       success,
       errorMessage,

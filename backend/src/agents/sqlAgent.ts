@@ -631,7 +631,7 @@ export async function generateSqlFromAgent(input: SqlAgentInput): Promise<ChartA
       metricType: input.intent.metricType,
       sessionId: input.sessionId || null,
     },
-    model: 'openai/gpt-oss-120b',
+    model: '@thinkdeck/openai/gpt-oss-120b',
     modelParameters: { provider: 'groq' },
   }, { asType: 'generation' });
 
@@ -648,7 +648,7 @@ export async function generateSqlFromAgent(input: SqlAgentInput): Promise<ChartA
 
     try {
       const completion = await groq.chat.completions.create({
-        model: 'openai/gpt-oss-120b',
+        model: '@thinkdeck/openai/gpt-oss-120b',
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userMessage },
@@ -693,7 +693,7 @@ export async function generateSqlFromAgent(input: SqlAgentInput): Promise<ChartA
       throw err;
     } finally {
       logSqlAgentEvent(input, {
-        model: 'openai/gpt-oss-120b',
+        model: '@thinkdeck/openai/gpt-oss-120b',
         callType: 'sql_generation',
         success,
         errorMessage,
