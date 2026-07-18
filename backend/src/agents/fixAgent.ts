@@ -62,7 +62,7 @@ export async function runFixAgent(input: RunFixAgentInput): Promise<{ fixedSql: 
       hasValidationIssues: Boolean(input.validationIssues?.length),
       hasMysqlError: Boolean(input.mysqlError),
     },
-    model: 'openai/gpt-oss-120b',
+    model: '@thinkdeck/openai/gpt-oss-120b',
     modelParameters: { provider: 'groq' },
   }, { asType: 'generation' });
 
@@ -86,7 +86,7 @@ export async function runFixAgent(input: RunFixAgentInput): Promise<{ fixedSql: 
 
   try {
     const completion = await groq.chat.completions.create({
-      model: 'openai/gpt-oss-120b',
+      model: '@thinkdeck/openai/gpt-oss-120b',
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userMessage },
@@ -133,7 +133,7 @@ export async function runFixAgent(input: RunFixAgentInput): Promise<{ fixedSql: 
     observation.end();
     logAICall({
       callType: 'fix_agent',
-      model: 'openai/gpt-oss-120b',
+      model: '@thinkdeck/openai/gpt-oss-120b',
       userPrompt: input.userPrompt,
       success,
       errorMessage,
