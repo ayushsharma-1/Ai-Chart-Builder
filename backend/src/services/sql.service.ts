@@ -1,4 +1,5 @@
 import pool from '../config/db';
+import { startObservation } from '@langfuse/tracing';
 import { logAICall } from '../utils/aiMetricsLogger';
 import { QUERY_TIMEOUT_MS, injectAccountIdFilter, validateSql } from '../utils/sqlGuard';
 
@@ -64,6 +65,16 @@ function classifySqlError(error: any): string {
 }
 
 export async function runQuery(sql: string, params: unknown[] = [], options: RunQueryOptions = {}): Promise<QueryResult> {
+  const observation = startObservation('execute-sql', {
+    input: {
+      sql,
+      params,
+      accountId: options.accountId || null,
+      ttlSeconds: options.ttlSeconds ?? 0,
+      staleWhileRevalidateSeconds: options.staleWhileRevalidateSeconds ?? 0,
+    },
+  }, { asType: 'tool' });
+
   console.log('[SQL] accountId received:', options.accountId);
   const guard = validateSql(sql);
   const start = Date.now();
@@ -101,6 +112,7 @@ export async function runQuery(sql: string, params: unknown[] = [], options: Run
       latencyMs: Date.now() - start,
     });
 
+    observation.update({ output: { error: errorMessage } });
     throw new Error(errorMessage);
   }
 
@@ -124,6 +136,13 @@ export async function runQuery(sql: string, params: unknown[] = [], options: Run
     const ageSeconds = (now - cached.createdAt) / 1000;
 
     if (ageSeconds <= ttlSeconds) {
+      observation.update({
+        output: {
+          cacheStatus: 'hit',
+          rowCount: cached.rowCount,
+          executionTimeMs: 0,
+        },
+      });
       return {
         data: cached.data,
         rowCount: cached.rowCount,
@@ -137,6 +156,13 @@ export async function runQuery(sql: string, params: unknown[] = [], options: Run
         console.error('[SQL] Background cache refresh failed', error?.message || error);
       });
 
+      observation.update({
+        output: {
+          cacheStatus: 'stale',
+          rowCount: cached.rowCount,
+          executionTimeMs: 0,
+        },
+      });
       return {
         data: cached.data,
         rowCount: cached.rowCount,
@@ -193,6 +219,13 @@ export async function runQuery(sql: string, params: unknown[] = [], options: Run
       latencyMs: executionTimeMs,
     });
 
+    observation.update({
+      output: {
+        rowCount: data.length,
+        cacheStatus: cacheKey ? 'miss' : 'none',
+        executionTimeMs,
+      },
+    });
     return {
       data,
       rowCount: data.length,
@@ -239,8 +272,10 @@ export async function runQuery(sql: string, params: unknown[] = [], options: Run
       latencyMs: Date.now() - start,
     });
 
+    observation.update({ output: { error: error?.message || 'Query execution failed' } });
     throw new Error(error?.message || 'Query execution failed');
   } finally {
+    observation.end();
     connection.release();
   }
 }

@@ -17,6 +17,24 @@ function readStoredAccountId(): string | null {
   return stored && /^\d+$/.test(stored) ? stored : null;
 }
 
+function readStoredSessionId(): string | null {
+  if (globalThis.window === undefined) {
+    return null;
+  }
+
+  try {
+    const stored = globalThis.window.localStorage.getItem('lens.chat.state.v2');
+    if (!stored) {
+      return null;
+    }
+
+    const parsed = JSON.parse(stored) as { activeSessionId?: string | null };
+    return parsed.activeSessionId || null;
+  } catch {
+    return null;
+  }
+}
+
 function logReportError(scope: string, error: unknown) {
   if (axios.isAxiosError(error)) {
     console.error(`[useReports] ${scope} failed`, {
@@ -157,11 +175,13 @@ export function useReport(reportId?: string, options: { mode?: 'view' | 'edit'; 
   const refresh = useCallback(async (options: { persistSnapshots?: boolean } = {}) => {
     if (!reportId) return null;
     const accountId = readStoredAccountId();
+    const sessionId = readStoredSessionId();
     if (!accountId) return null;
 
     const { data } = await api.post(`/api/reports/${reportId}/refresh`, {
       persistSnapshots: options.persistSnapshots,
       accountId,
+      sessionId,
     });
     setReport(data.report);
     return data as { success: boolean; report: Report; results: ReportRefreshResult[] };

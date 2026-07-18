@@ -58,6 +58,7 @@ const QueryBuilderRequestSchema = z.object({
   plan: QueryPlanSchema,
   accountId: z.coerce.number().int().positive(),
   previewLimit: z.number().int().positive().max(5000).default(50),
+  sessionId: z.string().optional(),
 });
 
 const router = Router();
@@ -135,7 +136,7 @@ function inferChartConfig(plan: QueryPlan, rows: ResultRow[]) {
   };
 }
 
-async function runQueryBuilder(plan: QueryPlan, accountId: number, previewLimit: number, includeChartConfig: boolean) {
+async function runQueryBuilder(plan: QueryPlan, accountId: number, previewLimit: number, includeChartConfig: boolean, sessionId?: string) {
   const normalizedPlan = normalizePlan(plan, previewLimit);
   const compiledSql = compileQueryPlan(normalizedPlan);
   const validatedSql = validateSql(compiledSql);
@@ -151,6 +152,7 @@ async function runQueryBuilder(plan: QueryPlan, accountId: number, previewLimit:
     correctedSql: executableSql,
     retryCount: 0,
     userPrompt: 'query-builder',
+    sessionId,
   });
 
   const response: {
@@ -176,7 +178,8 @@ async function runQueryBuilder(plan: QueryPlan, accountId: number, previewLimit:
 router.post('/preview', async (req: Request, res: Response) => {
   try {
     const payload = QueryBuilderRequestSchema.omit({ previewLimit: true }).extend({ previewLimit: z.number().int().positive().max(50).default(50) }).parse(req.body);
-    const result = await runQueryBuilder(payload.plan, payload.accountId, payload.previewLimit, false);
+    const sessionId = payload.sessionId || req.header('x-lens-session-id') || undefined;
+    const result = await runQueryBuilder(payload.plan, payload.accountId, payload.previewLimit, false, sessionId);
     return res.json(result);
   } catch (error: any) {
     const message = error?.issues?.[0]?.message || error?.message || 'Unable to preview query.';
@@ -188,7 +191,8 @@ router.post('/preview', async (req: Request, res: Response) => {
 router.post('/execute', async (req: Request, res: Response) => {
   try {
     const payload = QueryBuilderRequestSchema.omit({ previewLimit: true }).extend({ previewLimit: z.number().int().positive().max(5000).default(5000) }).parse(req.body);
-    const result = await runQueryBuilder(payload.plan, payload.accountId, payload.previewLimit, true);
+    const sessionId = payload.sessionId || req.header('x-lens-session-id') || undefined;
+    const result = await runQueryBuilder(payload.plan, payload.accountId, payload.previewLimit, true, sessionId);
     return res.json(result);
   } catch (error: any) {
     const message = error?.issues?.[0]?.message || error?.message || 'Unable to execute query.';
@@ -216,11 +220,13 @@ const DerivedQueryRequestSchema = z.object({
   parentSql: z.string().min(10),
   transform: TransformPlanSchema,
   accountId: z.coerce.number().int().positive(),
+  sessionId: z.string().optional(),
 });
 
 router.post('/derived', async (req: Request, res: Response) => {
   try {
     const payload = DerivedQueryRequestSchema.parse(req.body);
+    const sessionId = payload.sessionId || req.header('x-lens-session-id') || undefined;
 
     const parentValidation = validateSql(payload.parentSql);
     if (!parentValidation.safe) {
@@ -239,6 +245,7 @@ router.post('/derived', async (req: Request, res: Response) => {
       correctedSql: derivedValidation.sanitizedSql,
       retryCount: 0,
       userPrompt: 'query-builder-derived',
+      sessionId,
     });
 
     const rows = result.data as ResultRow[];

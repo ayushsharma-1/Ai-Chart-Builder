@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { propagateAttributes, startActiveObservation } from '@langfuse/tracing';
 
 import Chart from '../models/Chart';
 import Report, { IReport } from '../models/Report';
@@ -334,7 +335,7 @@ export async function restoreReportVersion(reportId: string, version: number) {
   return hydrateReport(report.toObject());
 }
 
-export async function refreshReportCharts(reportId: string, options: { persistSnapshots?: boolean; accountId: string }) {
+export async function refreshReportCharts(reportId: string, options: { persistSnapshots?: boolean; accountId: string; sessionId?: string }) {
   const report = await Report.findById(reportId);
 
   if (!report) {
@@ -353,6 +354,7 @@ export async function refreshReportCharts(reportId: string, options: { persistSn
         ttlSeconds: report.refreshPolicy?.staleAfterSeconds || 300,
         staleWhileRevalidateSeconds: 60,
         accountId: options.accountId,
+        sessionId: options.sessionId,
       });
 
       const executionMetadata = {
@@ -423,58 +425,79 @@ function fallbackInsights(reportTitle: string, charts: any[]) {
   };
 }
 
-export async function generateReportSummary(reportId: string) {
-  const report = await Report.findById(reportId);
+export async function generateReportSummary(reportId: string, options: { sessionId?: string } = {}) {
+  const run = async () => startActiveObservation('generate-report-summary', async (span) => {
+    const report = await Report.findById(reportId);
 
-  if (!report) {
-    return null;
-  }
+    if (!report) {
+      span.update({ output: { found: false, reportId } });
+      return null;
+    }
 
-  const hydrated = await hydrateReport(report.toObject());
-  const charts = hydrated.charts || [];
-  const sourceHash = createHash('sha1').update(JSON.stringify(charts.map((chart: any) => ({
-    id: chart._id,
-    updatedAt: chart.updatedAt,
-    rowCount: chart.dataSnapshot?.length || 0,
-  })))).digest('hex');
-
-  if (report.aiSummary?.status === 'ready' && report.aiSummary.sourceHash === sourceHash) {
-    return hydrateReport(report.toObject());
-  }
-
-  report.aiSummary.status = 'generating';
-  await report.save();
-
-  let generated;
-
-  try {
-    generated = await generateDashboardInsights(report.title, charts.map((chart: any) => ({
-      id: String(chart._id),
-      title: chart.title,
-      chartType: chart.chartType,
+    const hydrated = await hydrateReport(report.toObject());
+    const charts = hydrated.charts || [];
+    const sourceHash = createHash('sha256').update(JSON.stringify(charts.map((chart: any) => ({
+      id: chart._id,
+      updatedAt: chart.updatedAt,
       rowCount: chart.dataSnapshot?.length || 0,
-      xAxis: chart.chartConfig?.xAxis,
-      yAxis: chart.chartConfig?.yAxis,
-      sampleRows: (chart.dataSnapshot || []).slice(0, 8),
-    })));
-  } catch (error) {
-    console.warn('[Report] Falling back to local insights:', (error as any)?.message || error);
-    generated = fallbackInsights(report.title, charts);
+    })))).digest('hex');
+
+    span.update({
+      input: {
+        reportId,
+        reportTitle: report.title,
+        chartCount: charts.length,
+      },
+    });
+
+    if (report.aiSummary?.status === 'ready' && report.aiSummary.sourceHash === sourceHash) {
+      const cached = hydrateReport(report.toObject());
+      span.update({ output: { cached: true, chartCount: charts.length } });
+      return cached;
+    }
+
+    report.aiSummary.status = 'generating';
+    await report.save();
+
+    let generated;
+
+    try {
+      generated = await generateDashboardInsights(report.title, charts.map((chart: any) => ({
+        id: String(chart._id),
+        title: chart.title,
+        chartType: chart.chartType,
+        rowCount: chart.dataSnapshot?.length || 0,
+        xAxis: chart.chartConfig?.xAxis,
+        yAxis: chart.chartConfig?.yAxis,
+        sampleRows: (chart.dataSnapshot || []).slice(0, 8),
+      })));
+    } catch (error) {
+      console.warn('[Report] Falling back to local insights:', (error as any)?.message || error);
+      generated = fallbackInsights(report.title, charts);
+    }
+
+    report.aiSummary = {
+      status: 'ready',
+      summary: generated.summary,
+      insights: generated.insights.map((insight) => ({
+        ...insight,
+        id: randomUUID(),
+        chartId: insight.chartId,
+      })),
+      generatedAt: new Date(),
+      sourceHash,
+    };
+
+    await report.save();
+
+    const result = hydrateReport(report.toObject());
+    span.update({ output: { cached: false, chartCount: charts.length } });
+    return result;
+  }, { asType: 'agent' });
+
+  if (options.sessionId) {
+    return propagateAttributes({ sessionId: options.sessionId }, run);
   }
 
-  report.aiSummary = {
-    status: 'ready',
-    summary: generated.summary,
-    insights: generated.insights.map((insight) => ({
-      ...insight,
-      id: randomUUID(),
-      chartId: insight.chartId,
-    })),
-    generatedAt: new Date(),
-    sourceHash,
-  };
-
-  await report.save();
-
-  return hydrateReport(report.toObject());
+  return run();
 }

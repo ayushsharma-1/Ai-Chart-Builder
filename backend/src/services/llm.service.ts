@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { startObservation } from '@langfuse/tracing';
 import groq from '../config/groq';
 import { logAICall } from '../utils/aiMetricsLogger';
 // Group-by validation moved into `sqlGuard.validateSql()` and no longer
@@ -15,6 +15,13 @@ interface InsightChartInput {
 }
 
 export async function generateDashboardInsights(reportTitle: string, charts: InsightChartInput[]) {
+  const observation = startObservation('generate-dashboard-insights', {
+    input: {
+      reportTitle,
+      chartCount: charts.length,
+    },
+  }, { asType: 'generation' });
+
   const start = Date.now();
   let usage: any;
   let success = false;
@@ -47,6 +54,17 @@ export async function generateDashboardInsights(reportTitle: string, charts: Ins
     }
 
     success = true;
+    observation.update({
+      output: {
+        chartCount: charts.length,
+        summaryPreview: String(JSON.parse(raw).summary || '').slice(0, 200),
+      },
+      usageDetails: {
+        input: usage?.prompt_tokens || 0,
+        output: usage?.completion_tokens || 0,
+        total: usage?.total_tokens || 0,
+      },
+    });
     return JSON.parse(raw) as {
       summary: string;
       insights: Array<{
@@ -59,8 +77,10 @@ export async function generateDashboardInsights(reportTitle: string, charts: Ins
     };
   } catch (err: any) {
     errorMessage = err?.message || String(err);
+    observation.update({ output: { error: errorMessage } });
     throw err;
   } finally {
+    observation.end();
     logAICall({
       callType: 'dashboard_insights',
       model: 'openai/gpt-oss-120b',
@@ -73,6 +93,13 @@ export async function generateDashboardInsights(reportTitle: string, charts: Ins
 }
 
 export async function generateSqlExplanation(sql: string, chartTitle: string): Promise<string> {
+  const observation = startObservation('generate-sql-explanation', {
+    input: {
+      chartTitle,
+      sql,
+    },
+  }, { asType: 'generation' });
+
   const start = Date.now();
   let usage: any;
   let success = false;
@@ -102,11 +129,24 @@ export async function generateSqlExplanation(sql: string, chartTitle: string): P
 
     usage = completion.usage;
     success = true;
-    return completion.choices[0]?.message?.content || 'No explanation available.';
+    const explanation = completion.choices[0]?.message?.content || 'No explanation available.';
+    observation.update({
+      output: {
+        explanation,
+      },
+      usageDetails: {
+        input: usage?.prompt_tokens || 0,
+        output: usage?.completion_tokens || 0,
+        total: usage?.total_tokens || 0,
+      },
+    });
+    return explanation;
   } catch (err: any) {
     errorMessage = err?.message || String(err);
+    observation.update({ output: { error: errorMessage } });
     throw err;
   } finally {
+    observation.end();
     logAICall({
       callType: 'sql_explanation',
       model: 'openai/gpt-oss-120b',

@@ -3,6 +3,7 @@ import cors from 'cors';
 import express from 'express';
 
 import { connectMongo } from './config/mongo';
+import { sdk } from './config/instrumentation';
 import { errorHandler } from './middleware/errorHandler';
 import { requestLogger } from './middleware/requestLogger';
 import chartsRoute from './routes/charts.route';
@@ -34,6 +35,33 @@ async function start() {
     console.log(`Backend running on http://localhost:${PORT}`);
   });
 }
+
+let shutdownInProgress = false;
+
+async function shutdown(signal: string) {
+  if (shutdownInProgress) {
+    return;
+  }
+
+  shutdownInProgress = true;
+  console.info(`Received ${signal}, shutting down backend...`);
+
+  try {
+    await sdk.shutdown();
+  } catch (err: any) {
+    console.warn('Langfuse shutdown failed:', err?.message || err);
+  }
+
+  process.exit(0);
+}
+
+process.on('SIGINT', () => {
+  void shutdown('SIGINT');
+});
+
+process.on('SIGTERM', () => {
+  void shutdown('SIGTERM');
+});
 
 start().catch((err) => {
   console.error('Failed to start backend:', err?.message || err);

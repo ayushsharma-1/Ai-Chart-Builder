@@ -336,6 +336,7 @@ export function useQuery() {
       const { data } = await api.post('/api/query', {
         prompt,
         accountId,
+        sessionId: activeSessionId,
         previousContext: currentChart ? {
           previousPrompt: currentChart.prompt,
           previousTitle: currentChart.title,

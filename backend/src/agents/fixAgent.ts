@@ -1,4 +1,5 @@
 import groq from '../config/groq';
+import { startObservation } from '@langfuse/tracing';
 import { validateSql } from '../utils/sqlGuard';
 import {
   FROZEN_COLUMN_CORRECTIONS,
@@ -54,6 +55,15 @@ export interface RunFixAgentInput {
 }
 
 export async function runFixAgent(input: RunFixAgentInput): Promise<{ fixedSql: string | null; fixed: boolean }> {
+  const observation = startObservation('fix-sql', {
+    input: {
+      mode: input.mode,
+      sessionId: input.sessionId || null,
+      hasValidationIssues: Boolean(input.validationIssues?.length),
+      hasMysqlError: Boolean(input.mysqlError),
+    },
+  }, { asType: 'generation' });
+
   const start = Date.now();
   let usage: any;
   let success = false;
@@ -90,17 +100,31 @@ export async function runFixAgent(input: RunFixAgentInput): Promise<{ fixedSql: 
     const guard = validateSql(cleaned);
     if (!guard.safe || !guard.sanitizedSql) {
       console.warn('[FixAgent] Fixed SQL failed guard:', guard.reason);
+      observation.update({ output: { fixed: false, reason: guard.reason || 'guard failed' } });
       return { fixedSql: null, fixed: false };
     }
 
     success = true;
     console.info('[FixAgent] Successfully fixed SQL');
+    observation.update({
+      output: {
+        fixed: true,
+        hasSql: Boolean(guard.sanitizedSql),
+      },
+      usageDetails: {
+        input: usage?.prompt_tokens || 0,
+        output: usage?.completion_tokens || 0,
+        total: usage?.total_tokens || 0,
+      },
+    });
     return { fixedSql: guard.sanitizedSql, fixed: true };
   } catch (err: any) {
     errorMessage = err?.message || String(err);
     console.error('[FixAgent] Failed:', errorMessage);
+    observation.update({ output: { error: errorMessage } });
     return { fixedSql: null, fixed: false };
   } finally {
+    observation.end();
     logAICall({
       callType: 'fix_agent',
       model: 'openai/gpt-oss-120b',

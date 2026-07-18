@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { Parser } from 'node-sql-parser';
+import { startObservation } from '@langfuse/tracing';
 import groq from '../config/groq';
 import {
   FROZEN_IDENTITY,
@@ -283,37 +284,54 @@ function buildPromptSpecificConstraints(userPrompt: string): string[] {
  * the database can surface an explicit validation error rather than a silent rewrite.
  */
 function fixOrderByAliases(sql: string): string {
-  const selectMatch = /^\s*SELECT\s+([\s\S]+?)\s+FROM\b/i.exec(sql);
-  if (!selectMatch) return sql;
+  const upperSql = sql.toUpperCase();
+  const selectIndex = upperSql.indexOf('SELECT ');
+  const fromIndex = upperSql.indexOf(' FROM', selectIndex + 7);
+
+  if (selectIndex < 0 || fromIndex < 0) return sql;
 
   const aliases = new Set<string>();
-  for (const item of splitTopLevelCommaSeparated(selectMatch[1])) {
+  for (const item of splitTopLevelCommaSeparated(sql.slice(selectIndex + 7, fromIndex))) {
     const m = /\bAS\s+([`"]?[a-z_][a-z0-9_]*[`"]?)\s*$/i.exec(item.trim());
     if (m) aliases.add(m[1].replace(/[`"]/g, '').toLowerCase());
   }
 
-  return sql.replace(/\bORDER\s+BY\s+([\s\S]+?)(?=\s*(?:LIMIT|$))/i, (full, orderBody) => {
-    const fixed = splitTopLevelCommaSeparated(orderBody).map((item: string, index: number) => {
-      const trimmed = item.trim();
-      const base = trimmed.replace(/\s+(ASC|DESC)\s*$/i, '').trim();
-      const directionMatch = /\s+(ASC|DESC)\s*$/i.exec(trimmed);
-      const direction = directionMatch?.[1] || '';
-      const baseLower = base.replace(/[`"]/g, '').toLowerCase();
+  const orderIndex = upperSql.indexOf(' ORDER BY ');
+  if (orderIndex < 0) {
+    return sql;
+  }
 
-      if (aliases.has(baseLower)) {
-        return trimmed;
-      }
+  const limitIndex = upperSql.indexOf(' LIMIT ', orderIndex + 10);
+  const orderBody = sql.slice(orderIndex + 10, limitIndex >= 0 ? limitIndex : undefined);
+  const fixed = splitTopLevelCommaSeparated(orderBody).map((item: string, index: number) => {
+    const trimmed = item.trim();
+    const upperTrimmed = trimmed.toUpperCase();
+    let base = trimmed;
+    let direction = '';
 
-      if (/[(.)]/.test(base) || /\b(FROM_UNIXTIME|DATE_FORMAT|CAST|COALESCE|COUNT|SUM|AVG)\b/i.test(base)) {
-        return trimmed;
-      }
+    if (upperTrimmed.endsWith(' ASC')) {
+      base = trimmed.slice(0, -4).trim();
+      direction = 'ASC';
+    } else if (upperTrimmed.endsWith(' DESC')) {
+      base = trimmed.slice(0, -5).trim();
+      direction = 'DESC';
+    }
 
-      console.warn(`[sqlAgent] ORDER BY may reference unknown alias: ${base}`);
-      return direction ? `${index + 1} ${direction}` : `${index + 1}`;
-    }).join(', ');
+    const baseLower = base.replace(/[`"]/g, '').toLowerCase();
 
-    return `ORDER BY ${fixed}`;
-  });
+    if (aliases.has(baseLower)) {
+      return trimmed;
+    }
+
+    if (/[(.)]/.test(base) || /\b(FROM_UNIXTIME|DATE_FORMAT|CAST|COALESCE|COUNT|SUM|AVG)\b/i.test(base)) {
+      return trimmed;
+    }
+
+    console.warn(`[sqlAgent] ORDER BY may reference unknown alias: ${base}`);
+    return direction ? `${index + 1} ${direction}` : `${index + 1}`;
+  }).join(', ');
+
+  return `ORDER BY ${fixed}`;
 }
 
 function detectWindowFunctionMisuse(sql: string): boolean {
@@ -461,8 +479,8 @@ function logSqlAgentEvent(input: SqlAgentInput, payload: {
   latencyMs: number;
   usage?: any;
   errorMessage?: string;
-  sqlFlow?: import('../utils/aiMetricsLogger').AIMetricsEntry['sqlFlow'];
-  query?: import('../utils/aiMetricsLogger').AIMetricsEntry['query'];
+  sqlFlow?: NonNullable<import('../utils/aiMetricsLogger').AIMetricsEntry['sqlFlow']>;
+  query?: NonNullable<import('../utils/aiMetricsLogger').AIMetricsEntry['query']>;
 }): void {
   logAICall({
     callType: payload.callType,
@@ -567,7 +585,7 @@ function stripIdentifierQuotes(value: string): string {
   }
 
   const firstChar = value[0];
-  const lastChar = value[value.length - 1];
+  const lastChar = value.at(-1) || '';
 
   if ((firstChar === '`' && lastChar === '`') || (firstChar === '"' && lastChar === '"')) {
     return value.slice(1, -1);
@@ -605,6 +623,16 @@ function readQuotedSection(sql: string, startIndex: number, quote: string): { te
 }
 
 export async function generateSqlFromAgent(input: SqlAgentInput): Promise<ChartAgentResponse> {
+  const observation = startObservation('generate-sql', {
+    input: {
+      userPrompt: input.userPrompt,
+      intent: input.intent.intent,
+      tables: input.intent.tables,
+      metricType: input.intent.metricType,
+      sessionId: input.sessionId || null,
+    },
+  }, { asType: 'generation' });
+
   const systemPrompt = buildSqlAgentSystemPrompt(input.schema, input.intent);
   const baseUserMessage = buildSqlAgentUserMessage(input);
   const semanticAliasPlan = buildSemanticAliasPlan(input.schema, input.intent);
@@ -671,29 +699,45 @@ export async function generateSqlFromAgent(input: SqlAgentInput): Promise<ChartA
     return parseCompletion(userMessage);
   };
 
-  const response = await callParseCompletion(baseUserMessage);
+  try {
+    const response = await callParseCompletion(baseUserMessage);
 
-  if (response.sql) {
-    let currentSql = response.sql;
-    const semanticAliasRewrite = rewriteSemanticAliases(currentSql, semanticAliasPlan);
-    currentSql = semanticAliasRewrite.sql;
-    currentSql = rewriteGroupByAliases(currentSql);
-    currentSql = fixOrderByAliases(currentSql);
+    if (response.sql) {
+      let currentSql = response.sql;
+      const semanticAliasRewrite = rewriteSemanticAliases(currentSql, semanticAliasPlan);
+      currentSql = semanticAliasRewrite.sql;
+      currentSql = rewriteGroupByAliases(currentSql);
+      currentSql = fixOrderByAliases(currentSql);
 
-    const normalization = normalizeReservedAliases(currentSql);
-    currentSql = normalization.sql;
+      const normalization = normalizeReservedAliases(currentSql);
+      currentSql = normalization.sql;
 
-    auditDistinctUsage(currentSql);
+      auditDistinctUsage(currentSql);
 
-    if (response.xAxis && normalization.aliasMap[response.xAxis.toLowerCase()]) {
-      response.xAxis = normalization.aliasMap[response.xAxis.toLowerCase()];
+      if (response.xAxis && normalization.aliasMap[response.xAxis.toLowerCase()]) {
+        response.xAxis = normalization.aliasMap[response.xAxis.toLowerCase()];
+      }
+      if (response.yAxis && normalization.aliasMap[response.yAxis.toLowerCase()]) {
+        response.yAxis = normalization.aliasMap[response.yAxis.toLowerCase()];
+      }
+
+      response.sql = currentSql;
     }
-    if (response.yAxis && normalization.aliasMap[response.yAxis.toLowerCase()]) {
-      response.yAxis = normalization.aliasMap[response.yAxis.toLowerCase()];
-    }
 
-    response.sql = currentSql;
+    observation.update({
+      output: {
+        isAnalyticsQuery: response.isAnalyticsQuery,
+        chartType: response.chartType,
+        title: response.title,
+        hasSql: Boolean(response.sql),
+      },
+    });
+
+    return response;
+  } catch (err: any) {
+    observation.update({ output: { error: err?.message || String(err) } });
+    throw err;
+  } finally {
+    observation.end();
   }
-
-  return response;
 }

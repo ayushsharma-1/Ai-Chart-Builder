@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { startObservation } from '@langfuse/tracing';
 import groq from '../config/groq';
 import { logAICall } from '../utils/aiMetricsLogger';
 import { buildFrozenIntentPrefix } from '../utils/promptTokens';
@@ -391,99 +392,123 @@ export async function analyzeIntent(
   previousContext?: { previousPrompt?: string; previousTitle?: string },
   options?: { sessionId?: string }
 ): Promise<IntentAnalysis> {
+  const observation = startObservation('analyze-intent', {
+    input: {
+      userPrompt,
+      previousTitle: previousContext?.previousTitle || null,
+      sessionId: options?.sessionId || null,
+    },
+  }, { asType: 'generation' });
+
   const start = Date.now();
   let usage: any;
   let success = false;
   let errorMessage: string | undefined;
 
-  const parsedTimeRange = parseTimeRange(userPrompt);
-  const contextLines: string[] = [];
-
-  if (previousContext?.previousTitle || previousContext?.previousPrompt) {
-    contextLines.push(
-      'Follow-up context:',
-      `Prior chart: ${previousContext.previousTitle || 'unknown'}`,
-      `Prior prompt: ${previousContext.previousPrompt || 'unknown'}`,
-    );
-  }
-
-  const userMessage = [
-    `User request: ${userPrompt}`,
-    parsedTimeRange ? `Detected time range hint: ${parsedTimeRange.normalizedTimeRange}` : '',
-    ...contextLines,
-    'Identify which tables are needed and what the user wants to measure.',
-  ].join('\n');
-
-  // Pre-flight checks (zero-token) — catch obvious short or meta-system prompts
-  const normalizedPrompt = (userPrompt || '').toLowerCase();
-
-  if (isMetaSystemQuestion(normalizedPrompt)) {
-    const resp: IntentAnalysis = {
-      tables: [],
-      metricType: 'lookup',
-      timeRange: null,
-      normalizedTimeRange: null,
-      dimensions: [],
-      isAnalytics: false,
-      needsClarification: null,
-      chartHint: 'none',
-      intent: userPrompt,
-      confidence: 0.95,
-      confidenceReason: 'Pre-flight: detected meta/system question',
-      clarificationQuestion: null,
-    };
-
-    logAICall({
-      callType: 'intent_analysis',
-      model: 'none',
-      sessionId: options?.sessionId,
-      userPrompt,
-      success: true,
-      errorMessage: undefined,
-      latencyMs: Date.now() - start,
-      usage: undefined,
-    });
-
-    return resp;
-  }
-
-  if (shouldClarifyBeforeLLM(userPrompt)) {
-    const clarificationQuestion = buildVagueClarificationQuestion();
-    const hasEntity = hasEntitySignal(normalizedPrompt);
-    const hasMetric = hasMetricSignal(normalizedPrompt);
-    const hasTime = hasTimeSignal(normalizedPrompt);
-
-    const preflightResp: IntentAnalysis = {
-      tables: [],
-      metricType: 'lookup',
-      timeRange: null,
-      normalizedTimeRange: null,
-      dimensions: [],
-      isAnalytics: true,
-      needsClarification: null,
-      chartHint: 'none',
-      intent: userPrompt,
-      confidence: 0.1,
-      confidenceReason: !hasEntity || !hasMetric || !hasTime ? 'Pre-flight: prompt missing entity, metric, or time range' : 'Pre-flight: prompt too short',
-      clarificationQuestion,
-    };
-
-    logAICall({
-      callType: 'intent_analysis',
-      model: 'none',
-      sessionId: options?.sessionId,
-      userPrompt,
-      success: true,
-      errorMessage: undefined,
-      latencyMs: Date.now() - start,
-      usage: undefined,
-    });
-
-    return preflightResp;
-  }
-
-  // 6-second timeout to prevent pipeline stalls if intent agent hangs
   try {
+    const parsedTimeRange = parseTimeRange(userPrompt);
+    const contextLines: string[] = [];
+
+    if (previousContext?.previousTitle || previousContext?.previousPrompt) {
+      contextLines.push(
+        'Follow-up context:',
+        `Prior chart: ${previousContext.previousTitle || 'unknown'}`,
+        `Prior prompt: ${previousContext.previousPrompt || 'unknown'}`,
+      );
+    }
+
+    const userMessage = [
+      `User request: ${userPrompt}`,
+      parsedTimeRange ? `Detected time range hint: ${parsedTimeRange.normalizedTimeRange}` : '',
+      ...contextLines,
+      'Identify which tables are needed and what the user wants to measure.',
+    ].join('\n');
+
+    // Pre-flight checks (zero-token) — catch obvious short or meta-system prompts
+    const normalizedPrompt = (userPrompt || '').toLowerCase();
+
+    if (isMetaSystemQuestion(normalizedPrompt)) {
+      const resp: IntentAnalysis = {
+        tables: [],
+        metricType: 'lookup',
+        timeRange: null,
+        normalizedTimeRange: null,
+        dimensions: [],
+        isAnalytics: false,
+        needsClarification: null,
+        chartHint: 'none',
+        intent: userPrompt,
+        confidence: 0.95,
+        confidenceReason: 'Pre-flight: detected meta/system question',
+        clarificationQuestion: null,
+      };
+
+      observation.update({
+        output: {
+          confidence: resp.confidence,
+          intent: resp.intent,
+          isAnalytics: resp.isAnalytics,
+        },
+      });
+
+      logAICall({
+        callType: 'intent_analysis',
+        model: 'none',
+        sessionId: options?.sessionId,
+        userPrompt,
+        success: true,
+        errorMessage: undefined,
+        latencyMs: Date.now() - start,
+        usage: undefined,
+      });
+
+      return resp;
+    }
+
+    if (shouldClarifyBeforeLLM(userPrompt)) {
+      const clarificationQuestion = buildVagueClarificationQuestion();
+      const hasEntity = hasEntitySignal(normalizedPrompt);
+      const hasMetric = hasMetricSignal(normalizedPrompt);
+      const hasTime = hasTimeSignal(normalizedPrompt);
+
+      const preflightResp: IntentAnalysis = {
+        tables: [],
+        metricType: 'lookup',
+        timeRange: null,
+        normalizedTimeRange: null,
+        dimensions: [],
+        isAnalytics: true,
+        needsClarification: null,
+        chartHint: 'none',
+        intent: userPrompt,
+        confidence: 0.1,
+        confidenceReason: !hasEntity || !hasMetric || !hasTime ? 'Pre-flight: prompt missing entity, metric, or time range' : 'Pre-flight: prompt too short',
+        clarificationQuestion,
+      };
+
+      observation.update({
+        output: {
+          confidence: preflightResp.confidence,
+          clarificationQuestion,
+          intent: preflightResp.intent,
+        },
+      });
+
+      logAICall({
+        callType: 'intent_analysis',
+        model: 'none',
+        sessionId: options?.sessionId,
+        userPrompt,
+        success: true,
+        errorMessage: undefined,
+        latencyMs: Date.now() - start,
+        usage: undefined,
+      });
+
+      return preflightResp;
+    }
+
+    // 6-second timeout to prevent pipeline stalls if intent agent hangs
     const completion = await Promise.race([
       groq.chat.completions.create({
         model: 'llama-3.1-8b-instant',
@@ -514,7 +539,16 @@ export async function analyzeIntent(
     if (!result.success) {
       console.warn('[IntentAgent] Zod validation failed, using fallback:', result.error.flatten());
       success = true;
-      return buildIntentFallback(userPrompt);
+      const fallback = buildIntentFallback(userPrompt);
+      observation.update({
+        output: {
+          confidence: fallback.confidence,
+          intent: fallback.intent,
+          tables: fallback.tables,
+          fallback: true,
+        },
+      });
+      return fallback;
     }
 
     success = true;
@@ -524,11 +558,27 @@ export async function analyzeIntent(
       normalizedTimeRange: parsedTimeRange?.normalizedTimeRange || result.data.normalizedTimeRange || null,
     };
 
-    return coerceIntentForChartability(normalizedIntent, userPrompt);
+    const finalIntent = coerceIntentForChartability(normalizedIntent, userPrompt);
+    observation.update({
+      output: {
+        confidence: finalIntent.confidence,
+        intent: finalIntent.intent,
+        tables: finalIntent.tables,
+        metricType: finalIntent.metricType,
+      },
+      usageDetails: {
+        input: usage?.prompt_tokens || 0,
+        output: usage?.completion_tokens || 0,
+        total: usage?.total_tokens || 0,
+      },
+    });
+    return finalIntent;
   } catch (err: any) {
     errorMessage = err?.message || String(err);
+    observation.update({ output: { error: errorMessage } });
     throw err;
   } finally {
+    observation.end();
     logAICall({
       callType: 'intent_analysis',
       model: 'llama-3.1-8b-instant',

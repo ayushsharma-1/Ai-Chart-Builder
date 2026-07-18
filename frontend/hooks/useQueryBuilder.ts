@@ -124,6 +124,7 @@ export function useQueryBuilder() {
         plan,
         accountId: Number(accountId),
         previewLimit: 50,
+        sessionId: globalThis.window?.localStorage.getItem('lens.chat.state.v2') ? JSON.parse(globalThis.window.localStorage.getItem('lens.chat.state.v2') || '{}')?.activeSessionId : undefined,
       });
 
       if (previewRequestId.current !== requestId) {
@@ -168,6 +169,7 @@ export function useQueryBuilder() {
         plan,
         accountId: Number(accountId),
         previewLimit: 5000,
+        sessionId: globalThis.window?.localStorage.getItem('lens.chat.state.v2') ? JSON.parse(globalThis.window.localStorage.getItem('lens.chat.state.v2') || '{}')?.activeSessionId : undefined,
       });
 
       if (finalRequestId.current !== requestId) {
@@ -206,6 +208,7 @@ export function useQueryBuilder() {
         parentSql: baseSql,
         transform: transformPlan,
         accountId: Number(accountId),
+        sessionId: globalThis.window?.localStorage.getItem('lens.chat.state.v2') ? JSON.parse(globalThis.window.localStorage.getItem('lens.chat.state.v2') || '{}')?.activeSessionId : undefined,
       });
 
       if (derivedRequestId.current !== requestId) return data;

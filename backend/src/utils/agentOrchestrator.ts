@@ -7,6 +7,7 @@ import { buildDataProfile } from './dataTransformer';
 import { recommendChart } from './chartRecommender';
 import { logAICall } from './aiMetricsLogger';
 import { validateSql } from './sqlGuard';
+import { propagateAttributes, startActiveObservation } from '@langfuse/tracing';
 
 const CONFIDENCE_THRESHOLD = 0.65;
 
@@ -410,116 +411,159 @@ function buildAnalyticsSuccessResult(
 }
 
 export async function runAnalyticsPipeline(input: OrchestratorInput): Promise<OrchestratorResponse> {
-  const pipelineStart = Date.now();
-  const timings = { intentMs: 0, schemaMs: 0, sqlGenMs: 0, executionMs: 0 };
+  return propagateAttributes(
+    {
+      traceName: 'analytics-request',
+      sessionId: input.sessionId,
+      tags: ['analytics', 'query'],
+      metadata: {
+        accountId: input.accountId,
+        endpoint: 'api-query',
+      },
+    },
+    async () => startActiveObservation('analytics-request', async (span) => {
+      const pipelineStart = Date.now();
+      const timings = { intentMs: 0, schemaMs: 0, sqlGenMs: 0, executionMs: 0 };
 
-  console.info('[Pipeline] Starting for prompt:', input.userPrompt);
+      const complete = (result: OrchestratorResponse): OrchestratorResponse => {
+        span.update(result.success
+          ? {
+              output: {
+                success: true,
+                title: result.title,
+                chartType: result.chartType,
+                rowCount: result.rowCount,
+                renderAs: result.renderAs || 'chart',
+              },
+            }
+          : {
+              output: {
+                success: false,
+                type: result.type,
+                message: result.message,
+              },
+            });
 
-  const intentStart = Date.now();
-  let intent: IntentAnalysis;
+        return result;
+      };
 
-  try {
-    intent = await analyzeIntent(input.userPrompt, input.previousContext, { sessionId: input.sessionId });
-    timings.intentMs = Date.now() - intentStart;
-    console.info('[Pipeline] Intent:', intent.intent, '| Tables:', intent.tables.join(', '));
-  } catch (err: any) {
-    console.warn('[Pipeline] Intent agent failed, using full-schema fallback:', err.message);
-    timings.intentMs = Date.now() - intentStart;
-    intent = buildIntentFallback(input.userPrompt);
-  }
-
-  if (!intent.isAnalytics) {
-    return buildNonAnalyticsError();
-  }
-
-  if (intent.confidence < CONFIDENCE_THRESHOLD) {
-    return buildClarificationError(intent);
-  }
-
-  if (intent.needsClarification) {
-    return {
-      success: false,
-      type: 'clarification',
-      message: intent.needsClarification,
-      clarificationNeeded: intent.needsClarification,
-      confidence: intent.confidence,
-      confidenceReason: intent.confidenceReason || undefined,
-    };
-  }
-
-  const schemaStart = Date.now();
-  const schemaResult = await fetchSchemaForIntent(intent);
-  timings.schemaMs = Date.now() - schemaStart;
-  if (schemaResult.error || !schemaResult.schema) {
-    return schemaResult.error || { success: false, type: 'error', message: 'Something went wrong. Please try again.' };
-  }
-
-  const schema = schemaResult.schema;
-  console.info('[Pipeline] Schema fetched for tables:', intent.tables.join(', '), '| Cache age:', Date.now() - schema.fetchedAt, 'ms');
-
-  const sqlGenStart = Date.now();
-  const agentResult = await generateAgentSql(input, intent, schema);
-  timings.sqlGenMs = Date.now() - sqlGenStart;
-  if (agentResult.error || !agentResult.agentResponse) {
-    return agentResult.error || { success: false, type: 'error', message: 'Something went wrong generating your query. Please try again.' };
-  }
-
-  const agentResponse = agentResult.agentResponse;
-
-  if (!agentResponse.isAnalyticsQuery || !agentResponse.sql) {
-    return {
-      success: false,
-      type: agentResponse.clarificationNeeded ? 'clarification' : 'non_analytics',
-      message: agentResponse.clarificationNeeded || 'I can only answer analytics questions about your recruitment data.',
-      clarificationNeeded: agentResponse.clarificationNeeded || undefined,
-    };
-  }
-
-  const executionStart = Date.now();
-  const executionResult = await executeSqlWithRepair(input, agentResponse.sql);
-  timings.executionMs = Date.now() - executionStart;
-  if (executionResult.error || !executionResult.queryResult) {
-    return executionResult.error || { success: false, type: 'error', message: 'Something went wrong. Please try again.' };
-  }
-
-  const queryResult = executionResult.queryResult;
-
-  if (queryResult.rowCount === 0) {
-    try {
-      logAICall({
-        callType: 'sql_execution',
-        model: 'mysql2',
-        sessionId: input.sessionId,
-        userPrompt: input.userPrompt,
-        success: false,
-        errorMessage: 'EMPTY_ANALYTICAL_RESULT',
-        errorDetails: { reason: 'No rows returned for non-table chart', name: 'EMPTY_ANALYTICAL_RESULT', category: 'EMPTY_RESULT' },
-        query: { sql: agentResponse.sql, sanitizedSql: agentResponse.sql, stage: 'execution' },
-        latencyMs: timings.executionMs,
+      console.info('[Pipeline] Starting for prompt:', input.userPrompt);
+      span.update({
+        input: {
+          userPrompt: input.userPrompt,
+          accountId: input.accountId,
+          sessionId: input.sessionId || null,
+          hasPreviousContext: Boolean(input.previousContext),
+        },
       });
-    } catch (e) {
-      console.warn('[Pipeline] Failed to log empty analytical result', (e as Error)?.message || e);
-    }
 
-    return {
-      success: false,
-      type: 'empty_result',
-      message: 'No matching analytical data found for selected filters/time range.',
-    };
-  }
+      const intentStart = Date.now();
+      let intent: IntentAnalysis;
 
-  if (intent.metricType === 'lookup' && !isAnalyticalPrompt(input.userPrompt)) {
-    return buildLookupSuccessResult(agentResponse, queryResult, timings, pipelineStart, executionResult.fixAttempted);
-  }
+      try {
+        intent = await analyzeIntent(input.userPrompt, input.previousContext, { sessionId: input.sessionId });
+        timings.intentMs = Date.now() - intentStart;
+        console.info('[Pipeline] Intent:', intent.intent, '| Tables:', intent.tables.join(', '));
+      } catch (err: any) {
+        console.warn('[Pipeline] Intent agent failed, using full-schema fallback:', err.message);
+        timings.intentMs = Date.now() - intentStart;
+        intent = buildIntentFallback(input.userPrompt);
+      }
 
-  const dataProfile = buildDataProfile(queryResult.data);
-  const recommendation = recommendChart({
-    llmChartType: agentResponse.chartType,
-    llmXAxis: agentResponse.xAxis,
-    llmYAxis: agentResponse.yAxis,
-    data: queryResult.data as Record<string, unknown>[],
-    dataProfile,
-  });
+      if (!intent.isAnalytics) {
+        return complete(buildNonAnalyticsError());
+      }
 
-  return buildAnalyticsSuccessResult(agentResponse, queryResult, recommendation, timings, pipelineStart, executionResult.fixAttempted);
+      if (intent.confidence < CONFIDENCE_THRESHOLD) {
+        return complete(buildClarificationError(intent));
+      }
+
+      if (intent.needsClarification) {
+        return complete({
+          success: false,
+          type: 'clarification',
+          message: intent.needsClarification,
+          clarificationNeeded: intent.needsClarification,
+          confidence: intent.confidence,
+          confidenceReason: intent.confidenceReason || undefined,
+        });
+      }
+
+      const schemaStart = Date.now();
+      const schemaResult = await fetchSchemaForIntent(intent);
+      timings.schemaMs = Date.now() - schemaStart;
+      if (schemaResult.error || !schemaResult.schema) {
+        return complete(schemaResult.error || { success: false, type: 'error', message: 'Something went wrong. Please try again.' });
+      }
+
+      const schema = schemaResult.schema;
+      console.info('[Pipeline] Schema fetched for tables:', intent.tables.join(', '), '| Cache age:', Date.now() - schema.fetchedAt, 'ms');
+
+      const sqlGenStart = Date.now();
+      const agentResult = await generateAgentSql(input, intent, schema);
+      timings.sqlGenMs = Date.now() - sqlGenStart;
+      if (agentResult.error || !agentResult.agentResponse) {
+        return complete(agentResult.error || { success: false, type: 'error', message: 'Something went wrong generating your query. Please try again.' });
+      }
+
+      const agentResponse = agentResult.agentResponse;
+
+      if (!agentResponse.isAnalyticsQuery || !agentResponse.sql) {
+        return complete({
+          success: false,
+          type: agentResponse.clarificationNeeded ? 'clarification' : 'non_analytics',
+          message: agentResponse.clarificationNeeded || 'I can only answer analytics questions about your recruitment data.',
+          clarificationNeeded: agentResponse.clarificationNeeded || undefined,
+        });
+      }
+
+      const executionStart = Date.now();
+      const executionResult = await executeSqlWithRepair(input, agentResponse.sql);
+      timings.executionMs = Date.now() - executionStart;
+      if (executionResult.error || !executionResult.queryResult) {
+        return complete(executionResult.error || { success: false, type: 'error', message: 'Something went wrong. Please try again.' });
+      }
+
+      const queryResult = executionResult.queryResult;
+
+      if (queryResult.rowCount === 0) {
+        try {
+          logAICall({
+            callType: 'sql_execution',
+            model: 'mysql2',
+            sessionId: input.sessionId,
+            userPrompt: input.userPrompt,
+            success: false,
+            errorMessage: 'EMPTY_ANALYTICAL_RESULT',
+            errorDetails: { reason: 'No rows returned for non-table chart', name: 'EMPTY_ANALYTICAL_RESULT', category: 'EMPTY_RESULT' },
+            query: { sql: agentResponse.sql, sanitizedSql: agentResponse.sql, stage: 'execution' },
+            latencyMs: timings.executionMs,
+          });
+        } catch (e) {
+          console.warn('[Pipeline] Failed to log empty analytical result', (e as Error)?.message || e);
+        }
+
+        return complete({
+          success: false,
+          type: 'empty_result',
+          message: 'No matching analytical data found for selected filters/time range.',
+        });
+      }
+
+      if (intent.metricType === 'lookup' && !isAnalyticalPrompt(input.userPrompt)) {
+        return complete(buildLookupSuccessResult(agentResponse, queryResult, timings, pipelineStart, executionResult.fixAttempted));
+      }
+
+      const dataProfile = buildDataProfile(queryResult.data);
+      const recommendation = recommendChart({
+        llmChartType: agentResponse.chartType,
+        llmXAxis: agentResponse.xAxis,
+        llmYAxis: agentResponse.yAxis,
+        data: queryResult.data as Record<string, unknown>[],
+        dataProfile,
+      });
+
+      return complete(buildAnalyticsSuccessResult(agentResponse, queryResult, recommendation, timings, pipelineStart, executionResult.fixAttempted));
+    }, { asType: 'agent' })
+  );
 }
