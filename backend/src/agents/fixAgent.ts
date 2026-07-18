@@ -93,6 +93,10 @@ export async function runFixAgent(input: RunFixAgentInput): Promise<{ fixedSql: 
       ],
       temperature: 0,
       max_tokens: 800,
+    }, {
+      headers: {
+        ...(observation.traceId ? { 'x-portkey-trace-id': observation.traceId } : {})
+      }
     });
 
     usage = completion.usage;
